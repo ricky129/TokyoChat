@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register</title>
+    <link rel="stylesheet" type="text/css" href="client.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Register for TokyoChat</h1>
+        <form id="registerForm">
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required>
+
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+
+            <button type="submit">Register</button>
+        </form>
+        <p id="message" class="error"></p>
+        <p>Already have an account? <a href="/login.html">Login here</a></p>
+    </div>
+
+    <script src="/script.js" defer></script>
+</body>
+</html>
