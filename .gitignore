@@ -1,0 +1,18 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+.env
+
+# Database file
+*.sqlite
+*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# VS Code files
+.vscode/
+
+# GitHub Desktop internal files (optional, as it manages them)
+.github/
