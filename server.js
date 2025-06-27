@@ -98,7 +98,7 @@ async function startApp() {
         });
 
         // Login Route
-        app.post('/login', (req, res) => {
+        app.post('/login', async (req, res) => {
             console.log('Login body:', req.body);
             const { username, password } = req.body;
             console.log('Login request received: ', { username });
@@ -106,35 +106,27 @@ async function startApp() {
             if (!username || !password)
                 return res.status(400).send('Username and password are required');
 
-            db.get(`SELECT * FROM users WHERE username = ?`, [username], (err, user) => {
-                console.log('Database query executed, err:', err, 'user:', user);
+            try {
+                const user = await db.get(`SELECT * FROM users WHERE username = ?`, [username]);
+                console.log('Database query executed:', 'user:', user);
 
-                if (err) {
-                    console.error('Database error: ', err);
-                    return res.status(500).send('Server error during login');
-                }
                 if (!user)
                     return res.status(401).send('Invalid username or password');
 
-                bcrypt.compare(password, user.password, (err, result) => {
-                    console.log('Password comparison executed, err:', err, 'result:', result);
+                const result = bcrypt.compare(password, user.password);
+                console.log('Password comparison executed, result:', result);
 
-                    if (err) {
-                        console.error('Error comparing passwords: ', err);
-                        return res.status(500).send('Server error during login');
-                    }
-
-                    if (result) {
-                        req.session.userId = user.id;
-                        req.session.username = user.username;
-                        console.log(`User ${user.username} logged in`);
-                        res.status(200).send('Login successful');
-                    } else
-                        res.status(401).send('Invalid username or password');
-
-                });
-
-            });
+                if (result) {
+                    req.session.userId = user.id;
+                    req.session.username = user.username;
+                    console.log(`User ${user.username} logged in`);
+                    res.status(200).send('Login successful');
+                } else
+                    res.status(401).send('Invalid username or password');
+            } catch (err) {
+                console.error('Database error: ', err);
+                return res.status(500).send('Server error during login');
+            }
         });
 
         // Logout Route
