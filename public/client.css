@@ -43,7 +43,7 @@ body {
     outline: none;
 }
 
-#form > button {
+#form>button {
     background: #333;
     border: none;
     padding: 0 1rem;
@@ -57,4 +57,45 @@ body {
     font-weight: bold;
     color: #555;
     font-size: 0.8em;
+}
+
+.contacts-section {
+    border: 1px solid #ccc;
+    padding: 10px;
+    margin-top: 20px;
+    max-height: 200px;
+    overflow-y: auto;
+    background-color: #f9f9f9;
+}
+
+.contacts-list {
+    list-style: none;
+    padding: 0;
+}
+
+.contacts-list li {
+    padding: 5px 0;
+    border-bottom: 1px dotted #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.contacts-list li:last-child {
+    border-bottom: none;
+}
+
+.add-contact-form {
+    margin-top: 10px;
+    display: flex;
+    gap: 5px;
+}
+
+.add-contact-form input {
+    flex-grow: 1;
+    padding: 5px;
+}
+
+.add-contact-form button {
+    padding: 5px 10px;
 }

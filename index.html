@@ -1,22 +1,41 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <link rel="stylesheet" type="text/css" href="client.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Simple Chat App</title>
 </head>
+
 <body>
+    <p id="welcomeMessage">Welcome to TokyoChat!</p>
+    <button id="logoutButton">Logout</button>
 
     <p>Your Socket ID: <span id="socketIdDisplay">Connecting...</span></p>
-    
+
+    <div class="contacts-section">
+        <h3>Your Contacts</h3>
+        <ul id="contactsList" class="contacts-list">
+            <li>Loading contacts...</li>
+        </ul>
+        <form id="addContactForm" class="add-contact-form">
+            <input type="text" id="addContactUsername" placeholder="Username to add" required>
+            <input type="text" id="addContactAlias" placeholder="Alias (optional)">
+            <button type="submit">Add</button>
+        </form>
+        <p id="contactMessage" class="error"></p>
+    </div>
+
+
     <ul id="messages"></ul>
     <form id="form" action="">
         <input id="input" autocomplete="off" /><button>Send</button>
     </form>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script>
+    <script src="/script.js"></script>
+    <!-- <script>
         const socket = io();
         const form = document.getElementById('form');
         const input = document.getElementById('input');
@@ -61,6 +80,7 @@
             messages.appendChild(item);
             window.scrollTo(0, document.body.scrollHeight);
         });
-    </script>
+    </script> -->
 </body>
+
 </html>

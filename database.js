@@ -20,6 +20,16 @@ async function initializeDB() {
             )`);
             console.log("Users table checked");
 
+        await db.run(
+            `CREATE TABLE IF NOT EXISTS contacts (
+            user_id INTEGER PRIMARY KEY,
+            encrypted_contacts TEXT NOT NULL,
+            iv TEXT NOT NULL,
+            salt TEXT NOT NULL,       
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )`);
+        console.log("Encrypted contacts table checked");
+
         const row = await db.get("SELECT COUNT(*) as count FROM users");
         if(row.count === 0) {
             const defaultUsername = "testuser";
