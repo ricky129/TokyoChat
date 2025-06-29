@@ -124,11 +124,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         socketIdDisplay.textContent = socket.id;
                     });
 
+                    // Message received Route
                     socket.on('chat message', (data) => {
                         const item = document.createElement('li');
 
+                        console.table(contactsCache);
+
                         let displayName = data.username;
+                        // data.id is the random id assigned at each user at login. Instead, the user should be random but consistent
                         const contact = contactsCache.find(c => c.contactUserID == data.id);
+                        console.log("Contact found: " + contact);
                         if(contact)
                             displayName = contact.alias || contact.contactUsername;
 

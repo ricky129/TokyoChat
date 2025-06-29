@@ -13,9 +13,8 @@ const io = new Server(server);
 const CLI_PORT = process.argv[2] ? parseInt(process.argv[2], 10) : null;
 const PORT = CLI_PORT || process.env.PORT || 3000;
 
-if (CLI_PORT && (isNaN(PORT) || PORT <= 0 || PORT > 65535)) {
+if (CLI_PORT && (isNaN(PORT) || PORT <= 0 || PORT > 65535))
     console.error(`Error: Invalid port specified from the command line: ${process.argv[2]}. Using default port 3000`);
-}
 
 const SESSION_SECRET = 'ilmiodolcepreferitoeiltiramisu';
 
@@ -126,29 +125,29 @@ async function startApp() {
                 const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`,
                     [username, hash]
                 );
-                const newUserId = result.lastID;
+                // For INSERT statements, the SQLite database engine automatically generates a unique row ID for the newly
+                // inserted row. This lastID property provides access to that auto-generated ID.
 
                 const salt = crypto.randomBytes(16).toString('hex');
                 const iv = crypto.randomBytes(16).toString('hex');
                 const derivedKey = await deriveKey(password, salt);
                 const emptyEncryptedContacts = await encrypt(JSON.stringify([]), derivedKey, Buffer.from(iv, 'hex'));
 
-                await db.run(`
-                        INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`,
+                await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`,
                     [result.lastID, emptyEncryptedContacts, iv, salt]
                 );
 
                 console.log(`User ${username} registered with ID: ${result.lastID}`);
                 req.session.userId = result.lastID;
                 req.session.username = username;
-                req.session.userContacts = [];
+                req.session.decrypted_contacts = [];
                 res.status(200).send('Registration successful!');
 
             } catch (dbErr) {
                 if (dbErr.code === 'SQLITE_CONSTRAINT' || dbErr.code === 'SQLITE_CONSTRAINT_UNIQUE')
                     return res.status(409).send('Username already taken.');
                 console.error('Error inserting user or contacts:', dbErr);
-                return res.status(500).send('Error registering user.'); // Fixed status here);
+                return res.status(500).send('Error registering user.');
             }
         }
         );
@@ -177,11 +176,14 @@ async function startApp() {
 
                 // Fetches the contacts entry for the active-in user to retrieve their encrypted_contacts, iv, and salt.
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [user.id]);
-
+                console.log("contactRecord: ");
+                console.log(contactRecord);
                 if (contactRecord) {
                     let derivedKey = await deriveKey(password, contactRecord.salt);
                     let decrypted_blob = await decrypt(contactRecord.encrypted_contacts, derivedKey, Buffer.from(contactRecord.iv, 'hex'));
-                    req.session.userContacts = JSON.parse(decrypted_blob);      // using req.session... the data is passed to the whole session and can be accessed by the whole node.js project from Express session's req
+                    req.session.decrypted_contacts = JSON.parse(decrypted_blob);      // using req.session the data is passed to the whole session and can be accessed by the whole node.js project from Express session's req
+                    console.log("decrypted_contacts: ");
+                    console.log(req.session.decrypted_contacts);
                     req.session.userId = user.id;
                     req.session.username = user.username;
                     req.session.encryptionKey = derivedKey.toString('hex'); // Store the derived string 
@@ -228,11 +230,11 @@ async function startApp() {
             res.sendFile(__dirname + '/index.html');
         });
 
-
+        // Contacts fetching Route
         app.get('/contacts', isAuthenticated, async (req, res) => {
             try {
                 // Retrieve the already decrpypted contacts from the session, loaded from decrypt() during login or registration
-                const contacts = req.session.userContacts || [];
+                const contacts = req.session.decrypted_contacts || [];
 
                 // Extract unique contact user IDs to fetch their usernames from the 'users' table
                 const contactUserIDs = contacts.map(c => c.contactUserID);
@@ -262,6 +264,7 @@ async function startApp() {
             }
         });
 
+        // Contact adding Route
         app.post('/contacts/add', isAuthenticated, async (req, res) => {
             const { contactUsername, alias } = req.body;
             if (!contactUsername)
@@ -293,7 +296,7 @@ async function startApp() {
 
                 // Add the new contact
                 const newContact = {
-                    id: Date.now(),
+                    // id: Date.now(),
                     contactUserID: contactUser.id,
                     alias: alias || contactUsername
                 }
@@ -307,7 +310,7 @@ async function startApp() {
                     [updateEncryptedContacts, req.session.userId]
                 );
 
-                req.session.userContacts = currentContacts;
+                req.session.decrypted_contacts = currentContacts;
                 res.status(200).json({
                     message: 'Contact added successfully.',
                     newContact: newContact
@@ -336,13 +339,22 @@ async function startApp() {
         io.on('connection', (socket) => {
             console.log(`A user connected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
 
+            // Message sent Route
             socket.on('chat message', (data) => {
-                const senderUsername = socket.request.username || socket.id;
+                const userId = socket.request.session.userId;
+                const senderUsername = socket.request.username;
+                
+                if (!userId) {
+                    console.warn(`Attempted to send message without a valid userId: ${socket.id}`);
+                    return;
+                }
+
                 const messageData = {
-                    id: socket.id,
+                    id: userId,
                     username: senderUsername,
                     message: data.message
                 };
+
                 console.log(`Message from ${messageData.username} (${messageData.id}): ${messageData.message}`);
                 io.emit('chat message', messageData);
             });
