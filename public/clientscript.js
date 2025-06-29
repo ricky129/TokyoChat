@@ -1,22 +1,46 @@
 document.addEventListener('DOMContentLoaded', () => {
 
     const loginForm = document.getElementById('loginForm');
+    console.log('loginForm:', loginForm);
+
     const registerForm = document.getElementById('registerForm');
+    console.log('registerForm:', registerForm);
 
     const welcomeMessage = document.getElementById('welcomeMessage');
+    console.log('welcomeMessage:', welcomeMessage);
+
     const logoutButton = document.getElementById('logoutButton');
+    console.log('logoutButton:', logoutButton);
 
     const contactsList = document.getElementById('contactsList');
+    console.log('contactsList:', contactsList);
+
     const addContactForm = document.getElementById('addContactForm');
+    console.log('addContactForm:', addContactForm);
+
     const addContactUsernameinput = document.getElementById('addContactUsername');
+    console.log('addContactUsernameinput:', addContactUsernameinput);
+
     const addContactAliasinput = document.getElementById('addContactAlias');
+    console.log('addContactAliasinput:', addContactAliasinput);
+
     const contactMessageDisplay = document.getElementById('contactMessage');
+    console.log('contactMessageDisplay:', contactMessageDisplay);
 
     const form = document.getElementById('form');
+    console.log('form:', form);
+
     const input = document.getElementById('input');
+    console.log('input:', input);
+
     const messages = document.getElementById('messages');
+    console.log('messages:', messages);
+
     const socketIdDisplay = document.getElementById('socketIdDisplay');
+    console.log('socketIdDisplay:', socketIdDisplay);
+
     const messageDisplay = document.getElementById('message');
+    console.log('messageDisplay:', messageDisplay);
 
     // --- Authentication Logic (for login.html and register.html) ---
     if (loginForm) {
@@ -84,14 +108,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (messages && form) {
-
+        let socket;
         async function checkAuthAndConnectSocket() {
             try {
                 const response = await fetch('/check-auth');
                 const data = await response.json();
 
                 if (data.authenticated) {
-                    welcomeMessage.textContent = `Welcome, ${data.username} to TokyoChat!`;
+                    welcomeMessage.textContent = `Welcome ${data.username} to TokyoChat!`;
                     // Initialize Socket.IO connection AFTER successful authentication check
                     socket = io(); // Connect to the Socket.IO server
 
@@ -102,14 +126,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     socket.on('chat message', (data) => {
                         const item = document.createElement('li');
+
+                        let displayName = data.username;
+                        const contact = contactsCache.find(c => c.contactUserID == data.id);
+                        if(contact)
+                            displayName = contact.alias || contact.contactUsername;
+
                         const senderSpan = document.createElement('span');
                         senderSpan.classList.add('message-sender');
-                        senderSpan.textContent = `[${data.id}]`;
-                        const messageText = document.createTextNode(data.message);
+                        senderSpan.textContent = `[${displayName}]`;
+
+                        const messageSpan = document.createElement('span');
+                        messageSpan.classList.add('message-text');
+                        messageSpan.textContent = data.message;
+
                         item.appendChild(senderSpan);
-                        item.appendChild(messageText);
+                        item.appendChild(messageSpan);
+
                         messages.appendChild(item);
-                        window.scrollTo(0, document.body.scrollHeight); // Scroll to bottom
                     });
 
                     form.addEventListener('submit', (e) => {
@@ -132,11 +166,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        let contactsCache = [];        
+
         async function loadContacts() {
             try {
                 const response = await fetch('/contacts');
                 if (response.ok) {
                     const contacts = await response.json();
+                    contactsCache = contacts;
                     contactsList.innerHTML = '';
 
                     if (contacts.length === 0) {
@@ -146,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else {
                         contacts.forEach(element => {
                             const item = document.createElement('li');
-                            const displayName = element.alias ? `${element.alias} (&{element.contactUsername})` : element.contactUsername;
+                            const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
                             item.textContent = displayName;
                             contactsList.appendChild(item);
                         });

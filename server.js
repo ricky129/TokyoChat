@@ -177,14 +177,17 @@ async function startApp() {
 
                 // Fetches the contacts entry for the active-in user to retrieve their encrypted_contacts, iv, and salt.
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [user.id]);
-                let derivedKey = await deriveKey(password, contactRecord.salt);
-                let decrypted_blob = await decrypt(contactRecord.encrypted_contacts, derivedKey, Buffer.from(contactRecord.iv, 'hex'));
-                req.session.userContacts = JSON.parse(decrypted_blob);      // using req.session... the data is passed to the whole session and can be accessed by the whole node.js project from Express session's req
-                req.session.userId = user.id;
-                req.session.username = user.username;
-                console.log(`User ${user.username} logged in`);
-                res.status(200).send('Login successful');
 
+                if (contactRecord) {
+                    let derivedKey = await deriveKey(password, contactRecord.salt);
+                    let decrypted_blob = await decrypt(contactRecord.encrypted_contacts, derivedKey, Buffer.from(contactRecord.iv, 'hex'));
+                    req.session.userContacts = JSON.parse(decrypted_blob);      // using req.session... the data is passed to the whole session and can be accessed by the whole node.js project from Express session's req
+                    req.session.userId = user.id;
+                    req.session.username = user.username;
+                    req.session.encryptionKey = derivedKey.toString('hex'); // Store the derived string 
+                    console.log(`User ${user.username} logged in`);
+                    res.status(200).send('Login successful');
+                }
             } catch (err) {
                 console.error('Database error: ', err);
                 return res.status(500).send('Server error during login');
@@ -245,13 +248,10 @@ async function startApp() {
                 }
                 // This is another map operation. It takes the contacts array (from the session, which has contactUserId and alias) and creates a new array.
                 const contactsWithUsernames = contacts.map(c => ({
-                    // 'id' here refers to the unique ID of the contact entry within the encrypted JSON array
-                    // It's used for client-side identification, e.g., if you later want to delete a specific alias.
                     id: c.id,
-                    contactUserID: c.contactUserID, // // The actual ID of the contact user in the 'users' table
-                    // Get the actual username from the map, or fallback to 'Unknown User'
-                    contactUsername: conctactUsernamesMap[c.contactUserId] || 'Unknown User',
-                    alias: c.alias // The custom alias the current user gave to this contact
+                    contactUserID: c.contactUserID,
+                    contactUsername: conctactUsernamesMap[c.contactUserID] || 'Unknown User',
+                    alias: c.alias
                 }));
 
                 res.json(contactsWithUsernames);  // Send the combined contacts data as a JSON response to the client
@@ -272,37 +272,35 @@ async function startApp() {
 
                 if (!contactUser)
                     return res.status(404).send('Contact user not found');
-
+                /*
                 if (contactUser.id === req.session.userId)
                     return res.status(400).send('Cannot add yourself as a contact');
-
+                */
                 // Retrieve current encrypted contacts data
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
-                if (contactRecord)
+                if (!contactRecord)
                     return res.status(500).send('User contacts data not found');
 
-                // Decrypt it using the user's password-derived key (from session if possible, or re-derive)
-                // For simplicity, we are re-deriving the key using the current password from the session.
-                // In a production app, you might store the derived key in a secure, ephemeral way.
-                const derivedKey = await deriveKey(req.session.password, contactRecord.salt);
-                const decryptedContactsString = await decrypt(contactRecord.encrypted_contacts, derivedKey, Buffer.from(iv, 'hex'));
+                // Retrieve the derived key from the session
+                const sessionDerivedKey = Buffer.from(req.session.encryptionKey, 'hex');
+                const decryptedContactsString = await decrypt(contactRecord.encrypted_contacts, sessionDerivedKey, Buffer.from(contactRecord.iv, 'hex'));
                 const currentContacts = JSON.parse(decryptedContactsString);
 
                 // Check if contact already exists to prevent duplicates
-                const contactExists = currentContacts.some(c => c.contactUserID === contactUser.Id);
+                const contactExists = currentContacts.some(c => c.contactUserID === contactUser.id);
                 if (contactExists)
                     return res.status(500).send('Contact already in your list');
 
                 // Add the new contact
                 const newContact = {
                     id: Date.now(),
-                    contactUserId: contactUser.Id,
+                    contactUserID: contactUser.id,
                     alias: alias || contactUsername
                 }
                 currentContacts.push(newContact);
 
                 // Re-encrypt the updated contacts data
-                const updateEncryptedContacts = await encrypt(JSON.stringify(currentContacts), deriveKey, Buffer.from(iv, 'hex'));
+                const updateEncryptedContacts = await encrypt(JSON.stringify(currentContacts), sessionDerivedKey, Buffer.from(contactRecord.iv, 'hex'));
 
                 // Update the database
                 await db.run(`UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`,
@@ -319,6 +317,13 @@ async function startApp() {
                 res.status(500).send('Error adding contact.');
             }
         })
+
+        // Socket IO integration
+        // By calling io.use(wrap(sessionMiddleware));, the code ensures that every new Socket.IO connection will 
+        // have access to the session data, just like regular HTTP requests. This is important for features like 
+        // authentication and user tracking, allowing you to access session information inside your Socket.IO event handlers.
+        const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
+        io.use(wrap(sessionMiddleware));
 
         io.use((socket, next) => {
             if (socket.request.session && socket.request.session.userId) {
