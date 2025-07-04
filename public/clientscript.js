@@ -42,14 +42,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageDisplay = document.getElementById('message');
     console.log('messageDisplay:', messageDisplay);
 
+    let contactsCache = [];
+
     // --- Authentication Logic (for login.html and register.html) ---
     if (loginForm) {
+        console.log("Inside login form.");
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            console.log('Login form submitted');
             const username = loginForm.username.value;
             const password = loginForm.password.value;
-            console.log('Sending login request: ', { username, password });
             try {
                 const response = await fetch('/login', {
                     method: 'POST',
@@ -59,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ username, password })
                 });
 
-                console.log('Login response:', response.status, await response.text())
+                console.log('Login response:', response.status, await response.text());
                 if (response.ok)
                     window.location.href = '/'; // Redirect to main chat page on success
                 else {
@@ -88,13 +89,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ username, password })
                 });
 
+                const responseText = await response.text();
+                console.log('Register response:', response.status, responseText);
                 if (response.ok) {
                     messageDisplay.classList.remove('error');
                     messageDisplay.classList.add('success');
                     window.location.href = '/'; // Redirect to main chat page on success
                 } else {
-                    const errorText = await response.text();
-                    messageDisplay.textContent = errorText || 'Registration failed.';
+                    messageDisplay.textContent = responseText || 'Registration failed.';
                     messageDisplay.classList.remove('success');
                     messageDisplay.classList.add('error');
                 }
@@ -113,23 +115,32 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const response = await fetch('/check-auth');
                 const data = await response.json();
-
+                console.log('Check-auth response:', data);
                 if (data.authenticated) {
                     welcomeMessage.textContent = `Welcome ${data.username} to TokyoChat!`;
-                    // Initialize Socket.IO connection AFTER successful authentication check
-                    socket = io(); // Connect to the Socket.IO server
+
+                    socket = io(); // <-- Initialize the socket connection
 
                     socket.on('connect', () => {
                         console.log('Connected to server! Your ID:', socket.id);
                         socketIdDisplay.textContent = socket.id;
                     });
 
+                    socket.on('session-changed', () => {
+                        window.location.href = '/login.html';
+                    });
+
+                    // Message received Route
                     socket.on('chat message', (data) => {
                         const item = document.createElement('li');
 
+                        console.table(contactsCache);
+
                         let displayName = data.username;
+                        // data.id is the random id assigned at each user at login. Instead, the user should be random but consistent
                         const contact = contactsCache.find(c => c.contactUserID == data.id);
-                        if(contact)
+                        console.log("Contact found: " + contact);
+                        if (contact)
                             displayName = contact.alias || contact.contactUsername;
 
                         const senderSpan = document.createElement('span');
@@ -142,7 +153,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         item.appendChild(senderSpan);
                         item.appendChild(messageSpan);
-
                         messages.appendChild(item);
                     });
 
@@ -155,18 +165,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
 
                     loadContacts();
-
                 } else
-                    // Not authenticated, redirect to login
                     window.location.href = '/login.html';
-
             } catch (error) {
                 console.error('Authentication check failed:', error);
                 window.location.href = '/login.html'; // Redirect on auth check error
             }
         }
-
-        let contactsCache = [];        
 
         async function loadContacts() {
             try {
@@ -174,28 +179,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     const contacts = await response.json();
                     contactsCache = contacts;
-                    contactsList.innerHTML = '';
+                    if (contactsList) contactsList.innerHTML = '';
 
                     if (contacts.length === 0) {
-                        const item = document.createElement('li');
-                        item.textContent = 'No contacts yet. Add some!';
-                        contactsList.appendChild(item);
-                    } else {
-                        contacts.forEach(element => {
+                        if (contactsList) {
                             const item = document.createElement('li');
-                            const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
-                            item.textContent = displayName;
+                            item.textContent = 'No contacts yet. Add some!';
                             contactsList.appendChild(item);
-                        });
+                        }
+                    } else {
+                        if (contactsList) {
+                            contacts.forEach(element => {
+                                const item = document.createElement('li');
+                                const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
+                                item.textContent = displayName;
+                                contactsList.appendChild(item);
+                            });
+                        }
                     }
                 } else {
-                    contactMessageDisplay.textContent = 'Failed to load contacts.';
-                    contactMessageDisplay.classList.add('error');
+                    if (contactMessageDisplay) {
+                        contactMessageDisplay.textContent = 'Failed to load contacts.';
+                        contactMessageDisplay.classList.add('error');
+                    }
                 }
             } catch (err) {
-                console.error('Error loading contacts:', error);
-                contactMessageDisplay.textContent = 'An error occurred while loading contacts.';
-                contactMessageDisplay.classList.add('error');
+                console.error('Error loading contacts:', err);
+                if (contactMessageDisplay) {
+                    contactMessageDisplay.textContent = 'An error occurred while loading contacts.';
+                    contactMessageDisplay.classList.add('error');
+                }
             }
         }
 
@@ -204,7 +217,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 e.preventDefault();
                 const contactUsername = addContactUsernameinput.value.trim();
                 const alias = addContactAliasinput.value.trim();
-
                 contactMessageDisplay.textContent = '';
                 contactMessageDisplay.classList.remove('error', 'success');
 
@@ -243,8 +255,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        checkAuthAndConnectSocket(); // Run auth check when index.html loads
-
         if (logoutButton) {
             logoutButton.addEventListener('click', async () => {
                 try {
@@ -263,6 +273,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+
+        checkAuthAndConnectSocket();
     }
-}
-);
+});

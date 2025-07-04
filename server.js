@@ -4,7 +4,6 @@ const { Server } = require('socket.io');
 const dbPromise = require('./database');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,16 +12,15 @@ const io = new Server(server);
 const CLI_PORT = process.argv[2] ? parseInt(process.argv[2], 10) : null;
 const PORT = CLI_PORT || process.env.PORT || 3000;
 
-if (CLI_PORT && (isNaN(PORT) || PORT <= 0 || PORT > 65535)) {
+if (CLI_PORT && (isNaN(PORT) || PORT <= 0 || PORT > 65535))
     console.error(`Error: Invalid port specified from the command line: ${process.argv[2]}. Using default port 3000`);
-}
 
 const SESSION_SECRET = 'ilmiodolcepreferitoeiltiramisu';
 
 const sessionMiddleware = session({
     secret: SESSION_SECRET,
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: true,
     cookie: {
         maxAge: 86400000,
         httpOnly: true,
@@ -36,8 +34,6 @@ function isAuthenticated(req, res, next) {
     else
         res.status(401).redirect('/login.html');
 }
-
-let db;
 
 /**
  * Derive a key from password and salt using PBKDF2
@@ -83,6 +79,9 @@ async function decrypt(encryptedText, key, iv) {
 }
 
 async function startApp() {
+    let db;
+    const userSockets = {};
+
     console.log('Initializing database...');
     try {
         db = await dbPromise;
@@ -111,83 +110,78 @@ async function startApp() {
 
         // Registration Route
         app.post('/register', async (req, res) => {
-            console.log('Register body:', req.body);
+            //console.log('Register body:', req.body);
             const { username, password } = req.body;
+
             if (!username || !password)
                 return res.status(400).send('Username and password are required.');
 
             try {
                 const existingUser = await db.get(`SELECT id FROM users WHERE username = ?`, [username]);
                 if (existingUser)
-                    return res.status(409).send('Username already taken.')
+                    return res.status(409).send('Username already taken.');
 
                 const hash = await bcrypt.hash(password, 10);
 
-                const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`,
-                    [username, hash]
-                );
-                const newUserId = result.lastID;
+                const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [username, hash]);
+                await db.run(`INSERT INTO contacts (user_id, contacts_json) VALUES (?, ?)`, [result.lastID, JSON.stringify([])]);
 
-                const salt = crypto.randomBytes(16).toString('hex');
-                const iv = crypto.randomBytes(16).toString('hex');
-                const derivedKey = await deriveKey(password, salt);
-                const emptyEncryptedContacts = await encrypt(JSON.stringify([]), derivedKey, Buffer.from(iv, 'hex'));
+                const userId = req.session.userId;
+                const oldUserId = req.session.userId;
+                if (oldUserId && userSockets[oldUserId]) {
+                    userSockets[userId].forEach(socketId => {
+                        io.to(socketId).emit('session-changed');
+                    });
+                    delete userSockets[userId];
+                }
 
-                await db.run(`
-                        INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`,
-                    [result.lastID, emptyEncryptedContacts, iv, salt]
-                );
-
-                console.log(`User ${username} registered with ID: ${result.lastID}`);
                 req.session.userId = result.lastID;
                 req.session.username = username;
-                req.session.userContacts = [];
+                /*req.session.decrypted_contacts = [];
+                req.session.encryptionKey = derivedKey.toString('hex'); // Store encryption key in session after registration*/
+                console.log(`User ${username} registered with ID: ${result.lastID}`);
                 res.status(200).send('Registration successful!');
 
             } catch (dbErr) {
                 if (dbErr.code === 'SQLITE_CONSTRAINT' || dbErr.code === 'SQLITE_CONSTRAINT_UNIQUE')
                     return res.status(409).send('Username already taken.');
                 console.error('Error inserting user or contacts:', dbErr);
-                return res.status(500).send('Error registering user.'); // Fixed status here);
+                return res.status(500).send('Error registering user.');
             }
         }
         );
 
         // Login Route
         app.post('/login', async (req, res) => {
-            console.log('Login body:', req.body);
+            //console.log('Login body:', req.body);
             const { username, password } = req.body;
-            console.log('Login request received: ', { username });
+            //console.log('Login request received: ', { username });
 
             if (!username || !password)
                 return res.status(400).send('Username and password are required');
 
             try {
                 const user = await db.get(`SELECT * FROM users WHERE username = ?`, [username]);
-                console.log('Database query executed:', 'user:', user);
-
                 if (!user)
                     return res.status(401).send('Invalid username');
 
-                const result = bcrypt.compare(password, user.password);
-                console.log('Password comparison executed, result:', result);
-
+                const result = await bcrypt.compare(password, user.password);
                 if (!result)
                     return res.status(401).send('Invalid password');
 
-                // Fetches the contacts entry for the active-in user to retrieve their encrypted_contacts, iv, and salt.
-                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [user.id]);
-
-                if (contactRecord) {
-                    let derivedKey = await deriveKey(password, contactRecord.salt);
-                    let decrypted_blob = await decrypt(contactRecord.encrypted_contacts, derivedKey, Buffer.from(contactRecord.iv, 'hex'));
-                    req.session.userContacts = JSON.parse(decrypted_blob);      // using req.session... the data is passed to the whole session and can be accessed by the whole node.js project from Express session's req
-                    req.session.userId = user.id;
-                    req.session.username = user.username;
-                    req.session.encryptionKey = derivedKey.toString('hex'); // Store the derived string 
-                    console.log(`User ${user.username} logged in`);
-                    res.status(200).send('Login successful');
+                const userId = req.session.userId;
+                if (userId && userSockets[userId]) {
+                    userSockets[userId].forEach(socketId => {
+                        io.to(socketId).emit('session-changed');
+                    });
+                    delete userSockets[userId];
                 }
+                req.session.userId = user.id;
+                req.session.username = user.username;
+                const contactRecord = await db.get(`SELECT contacts_json FROM contacts WHERE user_id = ?`, [user.id]);
+                req.session.contacts = contactRecord ? JSON.parse(contactRecord.contacts_json) : [];
+                console.log(`User ${user.username} logged in`);
+                res.status(200).send('Login successful');
             } catch (err) {
                 console.error('Database error: ', err);
                 return res.status(500).send('Server error during login');
@@ -196,6 +190,14 @@ async function startApp() {
 
         // Logout Route
         app.post('/logout', (req, res) => {
+            const userId = req.session.userId;
+            if (userId && userSockets[userId]) {
+                userSockets[userId].forEach(socketId => {
+                    io.to(socketId).emit('session-changed');
+                });
+                delete userSockets[userId];
+            }
+
             req.session.destroy(err => {
                 if (err) {
                     console.error('Error destroying session: ', err);
@@ -228,63 +230,54 @@ async function startApp() {
             res.sendFile(__dirname + '/index.html');
         });
 
-
+        // Contacts fetching Route
         app.get('/contacts', isAuthenticated, async (req, res) => {
             try {
-                // Retrieve the already decrpypted contacts from the session, loaded from decrypt() during login or registration
-                const contacts = req.session.userContacts || [];
+                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
+                if (!contactRecord)
+                    return res.status(500).send("The user's contacts data couldn't be found");
 
-                // Extract unique contact user IDs to fetch their usernames from the 'users' table
+                const contacts = JSON.parse(contactRecord.contacts_json);
+
+                // Map contactUserID to username
                 const contactUserIDs = contacts.map(c => c.contactUserID);
-                let conctactUsernamesMap = {};
+                let contactUsernamesMap = {};
                 if (contactUserIDs.length > 0) {
-                    const placeHolders = contactUserIDs.map(() => '?').join(','); // Create placeholders for the SQL IN clause
-
-                    // Fetch the usernames for the contact IDs from the 'users' table
+                    const placeHolders = contactUserIDs.map(() => '?').join(',');
                     const usersFromDB = await db.all(`SELECT id, username FROM users WHERE id IN (${placeHolders})`, contactUserIDs);
-                    usersFromDB.forEach(element => {    // // Map user IDs to usernames for easy lookup
-                        conctactUsernamesMap[element.id] = element.username;
+                    usersFromDB.forEach(element => {
+                        contactUsernamesMap[element.id] = element.username;
                     });
                 }
-                // This is another map operation. It takes the contacts array (from the session, which has contactUserId and alias) and creates a new array.
                 const contactsWithUsernames = contacts.map(c => ({
-                    id: c.id,
                     contactUserID: c.contactUserID,
-                    contactUsername: conctactUsernamesMap[c.contactUserID] || 'Unknown User',
+                    contactUsername: contactUsernamesMap[c.contactUserID] || 'Unknown User',
                     alias: c.alias
                 }));
 
-                res.json(contactsWithUsernames);  // Send the combined contacts data as a JSON response to the client
-
+                res.json(contactsWithUsernames);
             } catch (err) {
                 console.error('Error fetching contacts:', err);
                 res.status(500).send('Error fetching contacts.');
             }
         });
 
+        // Contact adding Route
         app.post('/contacts/add', isAuthenticated, async (req, res) => {
             const { contactUsername, alias } = req.body;
             if (!contactUsername)
                 return res.status(400).send('Contact Username is required.');
 
             try {
-                const contactUser = await db.get(`SELECT id FROM users WHERE username = ?`, [contactUsername]);
-
+                const contactUser = await db.get(`SELECT * FROM users WHERE username = ?`, [contactUsername]);
                 if (!contactUser)
-                    return res.status(404).send('Contact user not found');
-                /*
-                if (contactUser.id === req.session.userId)
-                    return res.status(400).send('Cannot add yourself as a contact');
-                */
-                // Retrieve current encrypted contacts data
+                    return res.status(404).send('Contact user not found.');
+
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
                 if (!contactRecord)
-                    return res.status(500).send('User contacts data not found');
+                    return res.status(500).send("The user's contacts data couldn't be found");
 
-                // Retrieve the derived key from the session
-                const sessionDerivedKey = Buffer.from(req.session.encryptionKey, 'hex');
-                const decryptedContactsString = await decrypt(contactRecord.encrypted_contacts, sessionDerivedKey, Buffer.from(contactRecord.iv, 'hex'));
-                const currentContacts = JSON.parse(decryptedContactsString);
+                const currentContacts = JSON.parse(contactRecord.contacts_json);
 
                 // Check if contact already exists to prevent duplicates
                 const contactExists = currentContacts.some(c => c.contactUserID === contactUser.id);
@@ -293,25 +286,18 @@ async function startApp() {
 
                 // Add the new contact
                 const newContact = {
-                    id: Date.now(),
                     contactUserID: contactUser.id,
                     alias: alias || contactUsername
                 }
                 currentContacts.push(newContact);
 
-                // Re-encrypt the updated contacts data
-                const updateEncryptedContacts = await encrypt(JSON.stringify(currentContacts), sessionDerivedKey, Buffer.from(contactRecord.iv, 'hex'));
+                await db.run(`UPDATE contacts SET contacts_json = ? WHERE user_id = ?`, [JSON.stringify(currentContacts), req.session.userId]);
+                console.log('Contacts updated for user:', req.session.userId);
 
-                // Update the database
-                await db.run(`UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`,
-                    [updateEncryptedContacts, req.session.userId]
-                );
-
-                req.session.userContacts = currentContacts;
                 res.status(200).json({
                     message: 'Contact added successfully.',
                     newContact: newContact
-                })
+                });
             } catch (err) {
                 console.error('Error adding contact:', err);
                 res.status(500).send('Error adding contact.');
@@ -334,20 +320,38 @@ async function startApp() {
         });
 
         io.on('connection', (socket) => {
-            console.log(`A user connected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
+            const userId = socket.request.session.userId;
+            if (userId) {
+                if (!userSockets[userId]) userSockets[userId] = [];
+                userSockets[userId].push(socket.id);
+            }
 
+            // Message sent Route
             socket.on('chat message', (data) => {
-                const senderUsername = socket.request.username || socket.id;
+                const userId = socket.request.session.userId;
+                const senderUsername = socket.request.username;
+
+                if (!userId) {
+                    console.warn(`Attempted to send message without a valid userId: ${socket.id}`);
+                    return;
+                }
+
                 const messageData = {
-                    id: socket.id,
+                    id: userId,
                     username: senderUsername,
                     message: data.message
                 };
+
                 console.log(`Message from ${messageData.username} (${messageData.id}): ${messageData.message}`);
                 io.emit('chat message', messageData);
             });
 
             socket.on('disconnect', () => {
+                const userId = socket.request.session.userId;
+                if (userId && userSockets[userId]) {
+                    userSockets[userId] = userSockets[userId].filter(id => id !== socket.id);
+                    if (userSockets[userId].length === 0) delete userSockets[userId];
+                }
                 console.log(`User disconnected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
             });
         });
