@@ -1,9 +1,10 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const dbPromise = require('./database');
+const { dbPromise } = require('./database');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto'); // <-- ADD THIS LINE!
 
 const app = express();
 const server = http.createServer(app);
@@ -35,28 +36,18 @@ function isAuthenticated(req, res, next) {
         res.status(401).redirect('/login.html');
 }
 
-/**
- * Derive a key from password and salt using PBKDF2
- * @param {*} password user password
- * @param {*} salt random string of bits added to a password before it's hashed and stored
- * @returns Derived key from password and salt params
- */
+// --- ENCRYPTION HELPERS ---
+
 async function deriveKey(password, salt) {
     return new Promise((resolve, reject) => {
         crypto.pbkdf2(password, salt, 100000, 32, 'sha512', (err, derivedKey) => {
             if (err)
                 reject(err);
             resolve(derivedKey);
-        })
-    })
+        });
+    });
 }
-/**
- * Encrypt the 'text param using the 'aes-256-cbc' algorithm.
- * @param {*} text The text to encrypt
- * @param {*} key A string of bits that acts as a secret code for scrambling and unscrambling data, with randomness and security enhanced by the salt variable
- * @param {*} iv fixed-size input added to enchance the randomness and security of the encryption using the key
- * @returns encrypted 'text' param using the 'aes-256-cbc' algorithm.
- */
+
 async function encrypt(text, key, iv) {
     const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -64,19 +55,14 @@ async function encrypt(text, key, iv) {
     return encrypted;
 }
 
-/**
- * Decrypt the 'encryptedText' variable using the 'aes-256-cbc' algorithm.
- * @param {*} encryptedText The text to decrypt
- * @param {*} key A string of bits that acts as a secret code for scrambling and unscrambling data, with randomness and security enhanced by the salt variable
- * @param {*} iv fixed-size input added to enchance the randomness and security of the encryption using the key
- * @returns encrypted 'encryptedText' param using the 'aes-256-cbc' algorithm.
- */
 async function decrypt(encryptedText, key, iv) {
     const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
     let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
 }
+
+// -----------------------------------
 
 async function startApp() {
     let db;
@@ -88,9 +74,7 @@ async function startApp() {
         console.log('Database initialized successfully, db:', !!db);
 
         // Body parsers
-        app.use(express.urlencoded({
-            extended: true
-        }));
+        app.use(express.urlencoded({ extended: true }));
         app.use(express.json());
 
         // Session middleware
@@ -108,9 +92,8 @@ async function startApp() {
         // Static files
         app.use(express.static('public'));
 
-        // Registration Route
+        // --- REGISTRATION ROUTE (with encryption) ---
         app.post('/register', async (req, res) => {
-            //console.log('Register body:', req.body);
             const { username, password } = req.body;
 
             if (!username || !password)
@@ -122,11 +105,19 @@ async function startApp() {
                     return res.status(409).send('Username already taken.');
 
                 const hash = await bcrypt.hash(password, 10);
-
                 const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [username, hash]);
-                await db.run(`INSERT INTO contacts (user_id, contacts_json) VALUES (?, ?)`, [result.lastID, JSON.stringify([])]);
 
-                const userId = req.session.userId;
+                // ENCRYPT EMPTY CONTACTS FOR NEW USER
+                const userId = result.lastID;
+                const contacts = [];
+                const salt = crypto.randomBytes(16); // Buffer, not hex string
+                const iv = crypto.randomBytes(16).toString('hex');
+                const key = await deriveKey(password, salt);
+                req.session.derivedKey = key;
+                const encrypted_contacts = await encrypt(JSON.stringify(contacts), key, Buffer.from(iv, 'hex'));
+
+                await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`, [userId, encrypted_contacts, iv, salt.toString('hex')]);
+
                 const oldUserId = req.session.userId;
                 if (oldUserId && userSockets[oldUserId]) {
                     userSockets[userId].forEach(socketId => {
@@ -135,11 +126,11 @@ async function startApp() {
                     delete userSockets[userId];
                 }
 
-                req.session.userId = result.lastID;
+                req.session.userId = userId;
                 req.session.username = username;
-                /*req.session.decrypted_contacts = [];
-                req.session.encryptionKey = derivedKey.toString('hex'); // Store encryption key in session after registration*/
-                console.log(`User ${username} registered with ID: ${result.lastID}`);
+                // Do not store sensitive key in session
+
+                console.log(`User ${username} registered with ID: ${userId}`);
                 res.status(200).send('Registration successful!');
 
             } catch (dbErr) {
@@ -148,14 +139,11 @@ async function startApp() {
                 console.error('Error inserting user or contacts:', dbErr);
                 return res.status(500).send('Error registering user.');
             }
-        }
-        );
+        });
 
-        // Login Route
+        // --- LOGIN ROUTE (with contacts decryption) ---
         app.post('/login', async (req, res) => {
-            //console.log('Login body:', req.body);
             const { username, password } = req.body;
-            //console.log('Login request received: ', { username });
 
             if (!username || !password)
                 return res.status(400).send('Username and password are required');
@@ -169,17 +157,34 @@ async function startApp() {
                 if (!result)
                     return res.status(401).send('Invalid password');
 
-                const userId = req.session.userId;
-                if (userId && userSockets[userId]) {
-                    userSockets[userId].forEach(socketId => {
+                // Fetch encrypted contacts
+                const contactRecord = await db.get(`SELECT encrypted_contacts, iv, salt FROM contacts WHERE user_id = ?`, [user.id]);
+                let contacts = [];
+                if (contactRecord) {
+                    const key = await deriveKey(password, Buffer.from(contactRecord.salt, 'hex'));
+                    req.session.derivedKey = key;
+                    try {
+                        const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                        contacts = JSON.parse(decrypted);
+                    } catch (e) {
+                        // If decryption fails, fallback to empty
+                        console.error('Failed to decrypt contacts for user', username, e);
+                        contacts = [];
+                    }
+                }
+
+                const oldUserId = req.session.userId;
+                if (oldUserId && userSockets[oldUserId]) {
+                    userSockets[oldUserId].forEach(socketId => {
                         io.to(socketId).emit('session-changed');
                     });
-                    delete userSockets[userId];
+                    delete userSockets[oldUserId];
                 }
                 req.session.userId = user.id;
                 req.session.username = user.username;
-                const contactRecord = await db.get(`SELECT contacts_json FROM contacts WHERE user_id = ?`, [user.id]);
-                req.session.contacts = contactRecord ? JSON.parse(contactRecord.contacts_json) : [];
+                req.session.contacts = contacts;
+                // Do not store sensitive key in session
+
                 console.log(`User ${user.username} logged in`);
                 res.status(200).send('Login successful');
             } catch (err) {
@@ -188,7 +193,7 @@ async function startApp() {
             }
         });
 
-        // Logout Route
+        // --- LOGOUT ROUTE ---
         app.post('/logout', (req, res) => {
             const userId = req.session.userId;
             if (userId && userSockets[userId]) {
@@ -208,7 +213,7 @@ async function startApp() {
             });
         });
 
-        // Check Auth Status
+        // --- CHECK AUTH STATUS ---
         app.get('/check-auth', (req, res) => {
             if (req.session.userId)
                 res.status(200).json({
@@ -221,7 +226,7 @@ async function startApp() {
                 });
         });
 
-        // Protect the main chat page
+        // --- MAIN CHAT PROTECTION ---
         app.get('/', isAuthenticated, (req, res) => {
             res.sendFile(__dirname + '/index.html');
         });
@@ -230,24 +235,45 @@ async function startApp() {
             res.sendFile(__dirname + '/index.html');
         });
 
-        // Contacts fetching Route
+        // --- CONTACTS FETCHING ROUTE (with decryption) ---
         app.get('/contacts', isAuthenticated, async (req, res) => {
             try {
+                const user = await db.get(`SELECT * FROM users WHERE id = ?`, [req.session.userId]);
+                if (!user) return res.status(401).send('User not found');
+
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
                 if (!contactRecord)
-                    return res.status(500).send("The user's contacts data couldn't be found");
+                    return res.status(500).send("The user's contacts data couldn't be found.");
 
-                const contacts = JSON.parse(contactRecord.contacts_json);
+                // Ensure the key is a Buffer
+                let contacts = [];
+                try {
+                    if (!req.session.derivedKey)
+                        return res.status(401).send('Session key missing. Please log in again.');
+
+                    // Convert derivedKey to Buffer if it's an object
+                    let key = req.session.derivedKey;
+                    if (!(key instanceof Buffer)) {
+                        if (key && key.type === 'Buffer' && Array.isArray(key.data)) {
+                            key = Buffer.from(key.data);
+                        } else
+                            throw new Error('Invalid key format in session');
+                    }
+                    const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                    console.log('Decrypted contacts:', decrypted);
+                    contacts = JSON.parse(decrypted);
+                } catch (e) {
+                    console.error('Failed to decrypt contacts', e);
+                    return res.status(500).send('Failed to decrypt contacts. Please ensure your login credentials are correct.');
+                }
 
                 // Map contactUserID to username
                 const contactUserIDs = contacts.map(c => c.contactUserID);
                 let contactUsernamesMap = {};
                 if (contactUserIDs.length > 0) {
-                    const placeHolders = contactUserIDs.map(() => '?').join(',');
-                    const usersFromDB = await db.all(`SELECT id, username FROM users WHERE id IN (${placeHolders})`, contactUserIDs);
-                    usersFromDB.forEach(element => {
-                        contactUsernamesMap[element.id] = element.username;
-                    });
+                    const placeholders = contactUserIDs.map(() => '?').join(',');
+                    const users = await db.all(`SELECT id, username FROM users WHERE id IN (${placeholders})`, contactUserIDs);
+                    users.forEach(u => { contactUsernamesMap[u.id] = u.username; });
                 }
                 const contactsWithUsernames = contacts.map(c => ({
                     contactUserID: c.contactUserID,
@@ -262,36 +288,60 @@ async function startApp() {
             }
         });
 
-        // Contact adding Route
+        // --- CONTACT ADDING ROUTE (with encryption) ---
         app.post('/contacts/add', isAuthenticated, async (req, res) => {
             const { contactUsername, alias } = req.body;
+
+            const user = await db.get(`SELECT * FROM users WHERE username = ?`, [contactUsername]);
+            if (!user)
+                return res.status(404).send('User not found.');
+
+            const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
+            if (!contactRecord)
+                return res.status(500).send("The user's contacts data couldn't be found.");
+
             if (!contactUsername)
                 return res.status(400).send('Contact Username is required.');
 
+            // Convert derivedKey to Buffer if it's an object
+            let key = req.session.derivedKey;
+            if (!(key instanceof Buffer)) {
+                if (key && key.type === 'Buffer' && Array.isArray(key.data))
+                    key = Buffer.from(key.data);
+                else
+                    throw new Error('Invalid key format in session');
+            }
+
             try {
-                const contactUser = await db.get(`SELECT * FROM users WHERE username = ?`, [contactUsername]);
-                if (!contactUser)
-                    return res.status(404).send('Contact user not found.');
+                if (!req.session.derivedKey)
+                    return res.status(401).send('Session key missing. Please log in again.');
 
-                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
-                if (!contactRecord)
-                    return res.status(500).send("The user's contacts data couldn't be found");
+                try {
 
-                const currentContacts = JSON.parse(contactRecord.contacts_json);
+                    const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                    console.log('Decrypted contacts:', decrypted);
+                    contacts = JSON.parse(decrypted);
+                } catch (e) {
+                    console.error('Failed to decrypt contacts for add', e);
+                    return res.status(401).send('Invalid password for decryption.');
+                }
 
                 // Check if contact already exists to prevent duplicates
-                const contactExists = currentContacts.some(c => c.contactUserID === contactUser.id);
+                const contactExists = contacts.some(c => c.contactUserID === user.id);
                 if (contactExists)
                     return res.status(500).send('Contact already in your list');
 
                 // Add the new contact
                 const newContact = {
-                    contactUserID: contactUser.id,
+                    contactUserID: user.id,
                     alias: alias || contactUsername
                 }
-                currentContacts.push(newContact);
+                contacts.push(newContact);
 
-                await db.run(`UPDATE contacts SET contacts_json = ? WHERE user_id = ?`, [JSON.stringify(currentContacts), req.session.userId]);
+                // Encrypt updated contacts
+                const encrypted_contacts = await encrypt(JSON.stringify(contacts), key, Buffer.from(contactRecord.iv, 'hex'));
+
+                await db.run(`UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`, [encrypted_contacts, req.session.userId]);
                 console.log('Contacts updated for user:', req.session.userId);
 
                 res.status(200).json({
@@ -302,12 +352,9 @@ async function startApp() {
                 console.error('Error adding contact:', err);
                 res.status(500).send('Error adding contact.');
             }
-        })
+        });
 
-        // Socket IO integration
-        // By calling io.use(wrap(sessionMiddleware));, the code ensures that every new Socket.IO connection will 
-        // have access to the session data, just like regular HTTP requests. This is important for features like 
-        // authentication and user tracking, allowing you to access session information inside your Socket.IO event handlers.
+        // --- SOCKET.IO INTEGRATION ---
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
         io.use(wrap(sessionMiddleware));
 
@@ -326,7 +373,6 @@ async function startApp() {
                 userSockets[userId].push(socket.id);
             }
 
-            // Message sent Route
             socket.on('chat message', (data) => {
                 const userId = socket.request.session.userId;
                 const senderUsername = socket.request.username;
@@ -356,7 +402,7 @@ async function startApp() {
             });
         });
 
-        // Start the server only after everything is ready
+        // --- START SERVER ---
         server.listen(PORT, () => {
             console.log(`Server listening on port ${PORT}`);
             console.log(`Default login user: testuser / password`);
