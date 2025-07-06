@@ -10,15 +10,31 @@ async function initializeDB() {
             filename: './TokyoChat.sqlite',
             driver: sqlite3.Database
         });
+<<<<<<< Updated upstream
         console.log("Connected to the SQLite database");
+=======
+>>>>>>> Stashed changes
 
         await db.run(
             `CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
+                username TEXT NOT NULL UNIQUE,
+                password TEXT NOT NULL,
+                encryption_key BLOB
             )`);
+<<<<<<< Updated upstream
             console.log("Users table checked");
+=======
+
+        await db.run(
+            `CREATE TABLE IF NOT EXISTS contacts (
+                user_id INTEGER PRIMARY KEY,
+                encrypted_contacts TEXT NOT NULL,
+                iv TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )`);
+>>>>>>> Stashed changes
 
         const row = await db.get("SELECT COUNT(*) as count FROM users");
         if(row.count === 0) {
