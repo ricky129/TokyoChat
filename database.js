@@ -1,16 +1,43 @@
 const sqlite = require('sqlite');
 const sqlite3 = require('sqlite3');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'default_32_byte_long_key_123456789012'; // 32 bytes
+const IV_LENGTH = 16; // AES block size
+
+function encrypt(text, key = ENCRYPTION_KEY) {
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const salt = crypto.randomBytes(16);
+    const derivedKey = crypto.scryptSync(key, salt, 32);
+    const cipher = crypto.createCipheriv('aes-256-cbc', derivedKey, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return {
+        encryptedData: encrypted,
+        iv: iv.toString('hex'),
+        salt: salt.toString('hex')
+    };
+}
+
+function decrypt(encrypted, ivHex, saltHex, key = ENCRYPTION_KEY) {
+    const iv = Buffer.from(ivHex, 'hex');
+    const salt = Buffer.from(saltHex, 'hex');
+    const derivedKey = crypto.scryptSync(key, salt, 32);
+    const decipher = crypto.createDecipheriv('aes-256-cbc', derivedKey, iv);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+}
 
 async function initializeDB() {
     let db;
     try {
-
         db = await sqlite.open({
             filename: './TokyoChat.sqlite',
             driver: sqlite3.Database
         });
-        console.log("Connected to the SQLite database");
+        // console.log("Connected to the SQLite database");
 
         await db.run(
             `CREATE TABLE IF NOT EXISTS users (
@@ -18,17 +45,27 @@ async function initializeDB() {
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL
             )`);
-            console.log("Users table checked");
+        // console.log("Users table checked");
+
+        // Restore encrypted_contacts schema, not contacts_json
+        await db.run(
+            `CREATE TABLE IF NOT EXISTS contacts (
+                user_id INTEGER PRIMARY KEY,
+                encrypted_contacts TEXT NOT NULL,
+                iv TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )`);
+        // console.log("Encrypted contacts table checked");
 
         const row = await db.get("SELECT COUNT(*) as count FROM users");
-        if(row.count === 0) {
+        if (row.count === 0) {
             const defaultUsername = "testuser";
             const defaultPassword = "password";
-
-            console.log(`No users found. Attempting to insert default user '${defaultUsername}'...`);
+            // console.log(`No users found. Attempting to insert default user '${defaultUsername}'...`);
             const hash = await bcrypt.hash(defaultPassword, 10);
             const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [defaultUsername, hash]);
-            console.log(`Default user '${defaultUsername}' inserted with ID: ${result.lastID}`);
+            // console.log(`Default user '${defaultUsername}' inserted with ID: ${result.lastID}`);
         }
 
         return db;
@@ -37,6 +74,10 @@ async function initializeDB() {
         process.exit(1);
     }
 }
-/** We call initializeDB() immediately, which returns a Promise.
- * This Promise is then exported, and server.js will await it. */
-module.exports = initializeDB();
+
+// Export encryption functions for use elsewhere in your app
+module.exports = {
+    dbPromise: initializeDB(),
+    encrypt,
+    decrypt
+};

@@ -1,66 +1,40 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <link rel="stylesheet" type="text/css" href="client.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Simple Chat App</title>
 </head>
+
 <body>
+    <p id="welcomeMessage">Welcome to TokyoChat!</p>
+    <button id="logoutButton">Logout</button>
 
     <p>Your Socket ID: <span id="socketIdDisplay">Connecting...</span></p>
-    
+
+    <div class="contacts-section">
+        <h3>Your Contacts</h3>
+        <ul id="contactsList" class="contacts-list">
+            <li>Loading contacts...</li>
+        </ul>
+        <form id="addContactForm" class="add-contact-form">
+            <input type="text" id="addContactUsername" placeholder="Username to add" required>
+            <input type="text" id="addContactAlias" placeholder="Alias (optional)">
+            <button type="submit">Add</button>
+        </form>
+        <p id="contactMessage" class="error"></p>
+    </div>
+
+
     <ul id="messages"></ul>
     <form id="form" action="">
         <input id="input" autocomplete="off" /><button>Send</button>
     </form>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script>
-        const socket = io();
-        const form = document.getElementById('form');
-        const input = document.getElementById('input');
-        const messages = document.getElementById('messages');
-        const socketIdDisplay = document.getElementById('socketIdDisplay'); // Get the actual span element
-
-        socket.on('connect', () => {
-            console.log('Connected to server! Your ID:', socket.id);
-            socketIdDisplay.textContent = socket.id; // Update the content of the span
-        });
-
-        socket.on('disconnect', () => {
-            console.log('Disconnected from server.');
-            socketIdDisplay.textContent = 'Disconnected';
-        });
-
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            if (input.value) {
-                // Send an object containing both the message and the sender's ID
-                socket.emit('chat message', { id: socket.id, message: input.value });
-                input.value = '';
-            }
-        });
-
-        // Listen for chat message events from the server
-        socket.on('chat message', (data) => { // 'data' is now the object { id, message }
-            const item = document.createElement('li');
-
-            // Create a span for the sender ID
-            const senderSpan = document.createElement('span');
-            senderSpan.classList.add('message-sender'); // Add a class for styling
-            senderSpan.textContent = `[${data.id}]: `; // Format the ID
-
-            // Create a text node for the message content
-            const messageText = document.createTextNode(data.message);
-
-            // Append them to the list item
-            item.appendChild(senderSpan);
-            item.appendChild(messageText);
-
-            messages.appendChild(item);
-            window.scrollTo(0, document.body.scrollHeight);
-        });
-    </script>
+    <script src="/clientscript.js"></script>
 </body>
+
 </html>
