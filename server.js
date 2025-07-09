@@ -1,29 +1,35 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const dbPromise = require('./database');
-const session = require('express-session');
-const bcrypt = require('bcryptjs');
-<<<<<<< Updated upstream
-const { start } = require('repl');
-=======
-const crypto = require('crypto');
->>>>>>> Stashed changes
+import 'dotenv/config';
+import express, { urlencoded, json, static as expressStatic } from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import dbPromise from './database.js';
+import session from 'express-session';
+import { createClient } from 'redis';
+import { hash as _hash, compare } from 'bcryptjs';
+import { randomBytes } from 'crypto';
+import jwt from 'jsonwebtoken';
+import { RedisStore } from 'connect-redis';
+const { sign } = jwt;
 
 const app = express();
-const server = http.createServer(app);
+const server = createServer(app);
 const io = new Server(server);
 
-const CLI_PORT = process.argv[2] ? parseInt(process.argv[2], 10) : null;
-const PORT = CLI_PORT || process.env.PORT || 3000;
-
-if (CLI_PORT && (isNaN(PORT) || PORT <= 0 || PORT > 65535)) {
-    console.error(`Error: Invalid port specified from the command line: ${process.argv[2]}. Using default port 3000`);
+const TOKEN_SECRET = process.env.TOKEN_SECRET;
+if (!TOKEN_SECRET) {
+    console.error('Error: TOKEN_SECRET environment variable is required.');
+    process.exit(1);
 }
-
 const SESSION_SECRET = 'ilmiodolcepreferitoeiltiramisu';
 
-const redisClient = redis.createClient({
+const CLI_PORT = process.argv[2] ? parseInt(process.argv[2], 10) : null;
+if (CLI_PORT && (isNaN(CLI_PORT) || CLI_PORT <= 0 || CLI_PORT > 65535)) {
+    console.error(`Error: Invalid port specified from the command line: ${process.argv[2]}. Using default port 3000`);
+    CLI_PORT = null;
+}
+const PORT = CLI_PORT || process.env.PORT || 3000;
+
+const redisClient = createClient({
     url: 'redis://localhost:6379'
 });
 
@@ -31,6 +37,7 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 redisClient.connect().catch(console.error);
 
 const sessionMiddleware = session({
+    store: new RedisStore({ client: redisClient }),
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
@@ -50,38 +57,17 @@ function isAuthenticated(req, res, next) {
         res.status(401).redirect('/login.html');
 }
 
-<<<<<<< Updated upstream
-let db;
-=======
-async function encrypt(text, key, iv) {
-    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    return encrypted;
-}
-
-async function decrypt(encryptedText, key, iv) {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-}
->>>>>>> Stashed changes
-
 async function startApp() {
-    console.log('Initializing database...');
+    let db;
+    const userSockets = {};
     try {
         db = await dbPromise;
         console.log('Database initialized successfully, db:', !!db);
 
         // Body parsers
-        app.use(express.urlencoded({ extended: true }));
-        app.use(express.json());
-
-        // Session middleware
+        app.use(urlencoded({ extended: true }));
+        app.use(json());
         app.use(sessionMiddleware);
-
-        // Middleware to check db is ready (should always be true here)
         app.use((req, res, next) => {
             if (!db) {
                 console.error('Database not initialized yet for request:', req.url);
@@ -89,44 +75,33 @@ async function startApp() {
             }
             next();
         });
-
-        // Static files
-        app.use(express.static('public'));
+        app.use(expressStatic('public'));
 
         // Registration Route
-        app.post('/register', (req, res) => {
+        app.post('/register', async (req, res) => {
             console.log('Register body:', req.body);
             const { username, password } = req.body;
             if (!username || !password)
                 return res.status(400).send('Username and password are required.');
 
-            bcrypt.hash(password, 10, async (err, hash) => {
+            try {
+                const existingUser = await db.get(`SELECT id FROM users WHERE username = ?`, [username]);
+                if (existingUser)
+                    return res.status(409).send('Username already taken');
 
-<<<<<<< Updated upstream
-                if (err) {
-                    console.error('Error hashing password:', err);
-                    return res.status(500).send('Error registering user.');
-                }
-
-                try {
-                    const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`,
-                        [username, hash]
-                    );
-=======
-                const hash = await bcrypt.hash(password, 10);
-                const encryptionkey = crypto.randomBytes(32);
-                const result = await db.run(`INSERT INTO users (username, password, encryption_key) VALUES (?, ?, ?)`,
-                    [username, hash, encryptionkey]);
-
-                // ENCRYPT EMPTY CONTACTS FOR NEW USER
+                const hash = await _hash(password, 10);
+                const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [username, hash]);
                 const userId = result.lastID;
-                const contacts = [];
-                const salt = crypto.randomBytes(16);
-                const iv = crypto.randomBytes(16).toString('hex');
-                const encrypted_contacts = await encrypt(JSON.stringify(contacts), encryptionkey, Buffer.from(iv, 'hex'));
 
-                await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`,
-                    [userId, encrypted_contacts, iv, salt.toString('hex')]);
+                const encryptionKey = randomBytes(32);
+                const { encryptedData, iv } = await (await import('./database.js')).encrypt(JSON.stringify([]), encryptionKey);
+                await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv) VALUES (?, ?, ?)`, [userId, encryptedData, iv]);
+
+                const token = sign({ userId }, TOKEN_SECRET, { expiresIn: '1d' });
+                await db.run(
+                    `INSERT INTO tokens (token, user_id, encryption_key, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+                    [token, userId, encryptionKey, Date.now(), Date.now() + 86400000]
+                );
 
                 const oldUserId = req.session.userId;
                 if (oldUserId && userSockets[oldUserId]) {
@@ -136,67 +111,63 @@ async function startApp() {
                     delete userSockets[oldUserId];
                 }
 
-                const token = jwt.sign({ userId }, TOKEN_SECRET, { expiresIn: '1d' });
-                await db.run(
-                    `INSERT INTO tokens (token, user_id, encryption_key, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
-                    [token, userId, encryptionkey, Date.now(), Date.now() + 86400000]
-                );
-
                 req.session.userId = userId;
                 req.session.username = username;
->>>>>>> Stashed changes
 
-                    console.log(`User ${username} registered with ID: ${result.lastID}`);
-                    req.session.userId = result.lastID;
-                    req.session.username = username;
-                    res.status(200).send('Registration successful!');
-
-                } catch (dbErr) {
-                    if (dbErr.code === 'SQLITE_CONSTRAINT')
-                        return res.status(409).send('Username already taken.');
-                    console.error('Error inserting user:', dbErr);
-                    return res.status().send('Error registering user.');
-                }
-            });
+                console.log(`User ${username} registered with ID: ${result.lastID}`);
+                res.status(200).json({ message: 'Registration successful', token });
+            } catch (dbErr) {
+                console.error('Error inserting user:', dbErr);
+                res.status(500).send('Error registering user.');
+            }
         });
 
         // Login Route
         app.post('/login', async (req, res) => {
             console.log('Login body:', req.body);
             const { username, password } = req.body;
-            console.log('Login request received: ', { username });
 
             if (!username || !password)
                 return res.status(400).send('Username and password are required');
 
             try {
                 const user = await db.get(`SELECT * FROM users WHERE username = ?`, [username]);
-                console.log('Database query executed:', 'user:', user);
-
                 if (!user)
                     return res.status(401).send('Invalid username or password');
 
-                const result = bcrypt.compare(password, user.password);
-                console.log('Password comparison executed, result:', result);
+                const result = await compare(password, user.password);
+                if (!result)
+                    return res.status(401).send('Invalid username or password');
 
-<<<<<<< Updated upstream
-                if (result) {
-                    req.session.userId = user.id;
-                    req.session.username = user.username;
-                    console.log(`User ${user.username} logged in`);
-                    res.status(200).send('Login successful');
-                } else
-                    res.status(401).send('Invalid username or password');
-=======
-                // Fetch encrypted contacts
-                const contactRecord = await db.get(`SELECT encrypted_contacts, iv, salt FROM contacts WHERE user_id = ?`, [user.id]);
+                let encryptionKey;
+                const tokenRecord = await db.get(`SELECT encryption_key FROM tokens 
+                            WHERE user_id = ? AND expires_at > ? 
+                            ORDER BY created_at DESC LIMIT 1`,
+                    [user.id, Date.now()]
+                );
+                if (tokenRecord)
+                    encryptionKey = Buffer.from(tokenRecord.encryption_key);
+                else
+                    encryptionKey = randomBytes(32);
+
+                const token = sign({ userId: user.id }, TOKEN_SECRET, { expiresIn: '1d' });
+                await db.run(`INSERT INTO tokens (token, user_id, encryption_key, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+                    [token, user.id, encryptionKey, Date.now(), Date.now() + 86400000]
+                );
+
+                const contactRecord = await db.get(`SELECT encrypted_contacts, iv FROM contacts WHERE user_id = ?`, [user.id]);
                 let contacts = [];
                 if (contactRecord) {
                     try {
-                        const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
-                        contacts = JSON.parse(decrypted);
+                        if (tokenRecord) {
+                            const { decrypt } = await import('./database.js');
+                            const decrypted = decrypt(contactRecord.encrypted_contacts, contactRecord.iv, encryptionKey);
+                            contacts = JSON.parse(decrypted);
+                        } else {
+                            console.warn(`No valid token found for user ${user.id}, cannot decrypt contacts`);
+                            contacts = [];
+                        }
                     } catch (e) {
-                        // If decryption fails, fallback to empty
                         console.error('Failed to decrypt contacts for user', username, e);
                         contacts = [];
                     }
@@ -214,8 +185,7 @@ async function startApp() {
                 req.session.contacts = contacts;
 
                 console.log(`User ${user.username} logged in`);
-                res.status(200).send('Login successful');
->>>>>>> Stashed changes
+                res.status(200).json({ message: 'Login successful', token });
             } catch (err) {
                 console.error('Database error: ', err);
                 return res.status(500).send('Server error during login');
@@ -224,6 +194,18 @@ async function startApp() {
 
         // Logout Route
         app.post('/logout', (req, res) => {
+
+            const userId = req.session.userId;
+            if (userId && userSockets[userId]) {
+                userSockets[userId].forEach(socketId => {
+                    io.to(socketId).emit('session-changed');
+                });
+                delete userSockets[userId];
+            }
+
+            if (userId)
+                db.run(`DELETE FROM tokens WHERE user_id = ?`, [userId]);
+
             req.session.destroy(err => {
                 if (err) {
                     console.error('Error destroying session: ', err);
@@ -234,7 +216,6 @@ async function startApp() {
             });
         });
 
-        // Check Auth Status
         app.get('/check-auth', (req, res) => {
             if (req.session.userId)
                 res.status(200).json({
@@ -256,29 +237,34 @@ async function startApp() {
             res.sendFile(__dirname + '/index.html');
         });
 
-<<<<<<< Updated upstream
-        // Socket.IO integration
-=======
-        // --- CONTACTS FETCHING ROUTE (with decryption) ---
-        app.get('/contacts', isAuthenticated, async (req, res) => {
-            try {
-                const user = await db.get(`SELECT * FROM users WHERE id = ?`, [req.session.userId]);
-                if (!user) return res.status(401).send('User not found');
+        // --- CONTACTS FETCHING ROUTE ---
+        app.get('/contacts', async (req, res) => {
+            const token = req.headers['authorization']?.replace('Bearer ', '');
+            if (!token)
+                return res.status(401).send('Token required');
 
-                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
+            try {
+                const tokenRecord = await db.get(`SELECT * FROM tokens WHERE token = ? AND expires_at > ?`, [token, Date.now()]);
+                if (!tokenRecord)
+                    return res.status(401).send('Invalid or expired token');
+
+                const user = await db.get(`SELECT * FROM users WHERE id = ?`, [tokenRecord.user_id]);
+                if (!user)
+                    return res.status(401).send('User not found');
+
+                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [tokenRecord.user_id]);
                 if (!contactRecord)
                     return res.status(500).send("The user's contacts data couldn't be found.");
 
-                // Ensure the key is a Buffer
                 let contacts = [];
                 try {
-                    const key = Buffer.from(user.encryption_key);
-                    const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                    const key = Buffer.from(tokenRecord.encryption_key);
+                    const decrypted = (await import('./database.js')).decrypt(contactRecord.encrypted_contacts, contactRecord.iv, key);
                     console.log('Decrypted contacts:', decrypted);
                     contacts = JSON.parse(decrypted);
                 } catch (e) {
                     console.error('Failed to decrypt contacts', e);
-                    return res.status(500).send('Failed to decrypt contacts. Please ensure your login credentials are correct.');
+                    return res.status(500).send('Failed to decrypt contacts.')
                 }
 
                 // Map contactUserID to username
@@ -302,53 +288,60 @@ async function startApp() {
             }
         });
 
-        // --- CONTACT ADDING ROUTE (with encryption) ---
-        app.post('/contacts/add', isAuthenticated, async (req, res) => {
+        // --- CONTACT ADDING ROUTE ---
+        app.post('/contacts/add', async (req, res) => {
             const { contactUsername, alias } = req.body;
-
             if (!contactUsername)
                 return res.status(400).send('Contact Username is required.');
 
+            const token = req.headers['authorization']?.replace('Bearer ', '');
+            if (!token)
+                return res.status(401).send('Token required');
+
+
+
             try {
+                const tokenRecord = await db.get(`SELECT * FROM tokens WHERE token = ? AND expires_at > ?`, [token, Date.now()]);
+                if (!tokenRecord)
+                    return res.status(401).send('Invalid or expired token');
+
                 const user = await db.get(`SELECT * FROM users WHERE username = ?`, [contactUsername]);
                 if (!user)
                     return res.status(404).send('User not found.');
 
-                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
+                const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [tokenRecord.user_id]);
                 if (!contactRecord)
                     return res.status(500).send("The user's contacts data couldn't be found.");
 
                 let contacts = [];
 
                 try {
-                    const key = Buffer.from (user.encryption_key);
-                    const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                    const key = Buffer.from(tokenRecord.encryption_key);
+                    const decrypted = await (await import('./database.js')).decrypt(contactRecord.encrypted_contacts, contactRecord.iv, key);
                     console.log('Decrypted contacts:', decrypted);
                     contacts = JSON.parse(decrypted);
                 } catch (e) {
                     console.error('Failed to decrypt contacts for add', e);
-                    return res.status(401).send('Invalid password for decryption.');
+                    return res.status(500).send('Failed to decrypt contacts.');
                 }
 
-                // Check if contact already exists to prevent duplicates
                 const contactExists = contacts.some(c => c.contactUserID === user.id);
                 if (contactExists)
-                    return res.status(500).send('Contact already in your list');
+                    return res.status(409).send('Contact already in your list');
 
-                // Add the new contact
                 const newContact = {
                     contactUserID: user.id,
                     alias: alias || contactUsername
                 }
                 contacts.push(newContact);
 
-                const encrypted_contacts = await encrypt(JSON.stringify(contacts), key, Buffer.from(contactRecord.iv, 'hex'));
-                await db.run(`UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`, [encrypted_contacts, req.session.userId]);
-                console.log('Contacts updated for user:', req.session.userId);
+                const { encryptedData, iv } = await (await import('./database.js')).encrypt(JSON.stringify(contacts), Buffer.from(tokenRecord.encryption_key));
+                await db.run(`UPDATE contacts SET encrypted_contacts = ?, iv = ? WHERE user_id = ?`, [encryptedData, iv, tokenRecord.user_id]);
+                console.log('Contacts updated for user:', tokenRecord.user_id);
 
                 res.status(200).json({
                     message: 'Contact added successfully.',
-                    newContact: newContact
+                    newContact
                 });
             } catch (err) {
                 console.error('Error adding contact:', err);
@@ -356,8 +349,6 @@ async function startApp() {
             }
         });
 
-        // --- SOCKET.IO INTEGRATION ---
->>>>>>> Stashed changes
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
         io.use(wrap(sessionMiddleware));
 
@@ -370,12 +361,23 @@ async function startApp() {
         });
 
         io.on('connection', (socket) => {
+            const userId = socket.request.session.userId;
+            if (userId) {
+                if (!userSockets[userId])
+                    userSockets[userId] = [];
+                userSockets[userId].push(socket.id);
+            }
             console.log(`A user connected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
 
             socket.on('chat message', (data) => {
+                const userId = socket.request.session.userId;
+                if (!userId) {
+                    console.warn(`Attempted to send a message without a valid userId: ${socket.id}`);
+                    return;
+                }
                 const senderUsername = socket.request.username || socket.id;
                 const messageData = {
-                    id: socket.id,
+                    id: userId,
                     username: senderUsername,
                     message: data.message
                 };
@@ -384,6 +386,12 @@ async function startApp() {
             });
 
             socket.on('disconnect', () => {
+                const userId = socket.request.session.userId;
+                if (userId && userSockets[userId]) {
+                    userSockets[userId] = userSockets[userId].filter(id => id !== socket.id);
+                    if (userSockets[userId].length === 0)
+                        delete userSockets[userId];
+                }
                 console.log(`User disconnected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
             });
         });
