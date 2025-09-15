@@ -183,6 +183,10 @@ form {
     background: none;
 }
 
+#input {
+    flex-grow: 1;
+}
+
 input[type="text"] {
     flex-grow: 1;
     border: 1px solid var(--border-color);

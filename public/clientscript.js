@@ -1,4 +1,8 @@
 document.addEventListener('DOMContentLoaded', () => {
+    const inputField = document.getElementById('input');
+    
+    if (inputField)
+        inputField.focus();
 
     const loginForm = document.getElementById('loginForm');
     console.log('loginForm:', loginForm);
@@ -157,6 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         console.log('Connected to server! Your ID:', socket.id);
                         socketIdDisplay.textContent = socket.id;
                         console.log('socketIdDisplay.textContent:', socketIdDisplay.textContent);
+                        document.querySelector('[data-room="General" i]')?.click();
                     });
 
                     socket.on('room created', (newRoomName) => {
