@@ -2,36 +2,58 @@
 <html lang="en">
 
 <head>
-    <link rel="stylesheet" type="text/css" href="client.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Simple Chat App</title>
+    <title>TokyoChat</title>
+    <link rel="stylesheet" type="text/css" href="client.css">
 </head>
 
 <body>
-    <p id="welcomeMessage">Welcome to TokyoChat!</p>
-    <button id="logoutButton">Logout</button>
+    <div class="main-container">
+        <header class="app-header">
+            <div>
+                <p id="welcomeMessage">Welcome to TokyoChat!</p>
+                <p id="socketIdDisplay">Socket ID: Connecting...</p>
+            </div>
+            <button id="logoutButton">Logout</button>
+        </header>
 
-    <p>Your Socket ID: <span id="socketIdDisplay">Connecting...</span></p>
+        <main class="content-area">
 
-    <div class="contacts-section">
-        <h3>Your Contacts</h3>
-        <ul id="contactsList" class="contacts-list">
-            <li>Loading contacts...</li>
-        </ul>
-        <form id="addContactForm" class="add-contact-form">
-            <input type="text" id="addContactUsername" placeholder="Username to add" required>
-            <input type="text" id="addContactAlias" placeholder="Alias (optional)">
-            <button type="submit">Add</button>
-        </form>
-        <p id="contactMessage" class="error"></p>
+            <aside class="side-panel">
+                <div class="side-panel-section contacts-section">
+                    <h3>Contacts</h3>
+                    <ul id="contactsList" class="contacts-list">
+                        <li>Loading...</li>
+                    </ul>
+                    <form id="addContactForm" class="add-contact-form">
+                        <input type="text" id="addContactUsername" placeholder="Username to add" required>
+                        <input type="text" id="addContactAlias" placeholder="Alias (optional)">
+                        <button type="submit">Add Contact</button>
+                    </form>
+                    <p id="contactMessage"></p>
+                </div>
+
+                <div class="side-panel-section">
+                    <h3>Rooms</h3>
+                    <ul id="room-list">
+                        </ul>
+                    <form id="create-room-form">
+                        <input type="text" id="new-room" placeholder="New room name">
+                        <button id="create-room-btn">Create</button>
+                    </form>
+                </div>
+            </aside>
+
+            <div id="chat-container">
+                <ul id="messages"></ul>
+                <form id="form">
+                    <input id="input" autocomplete="off" placeholder="Type a message..." />
+                    <button>Send</button>
+                </form>
+            </div>
+        </main>
     </div>
-
-
-    <ul id="messages"></ul>
-    <form id="form" action="">
-        <input id="input" autocomplete="off" /><button>Send</button>
-    </form>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/clientscript.js"></script>

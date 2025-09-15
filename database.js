@@ -37,7 +37,7 @@ async function initializeDB() {
             filename: './TokyoChat.sqlite',
             driver: sqlite3.Database
         });
-        // console.log("Connected to the SQLite database");
+        console.log("Connected to the SQLite database");
 
         await db.run(
             `CREATE TABLE IF NOT EXISTS users (
@@ -45,9 +45,8 @@ async function initializeDB() {
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL
             )`);
-        // console.log("Users table checked");
+        console.log("Users table checked");
 
-        // Restore encrypted_contacts schema, not contacts_json
         await db.run(
             `CREATE TABLE IF NOT EXISTS contacts (
                 user_id INTEGER PRIMARY KEY,
@@ -56,16 +55,32 @@ async function initializeDB() {
                 salt TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )`);
-        // console.log("Encrypted contacts table checked");
+        console.log("Encrypted contacts table checked");
+
+        await db.run(
+            `CREATE TABLE IF NOT EXISTS rooms (
+                room_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+                )`);
+        console.log("Rooms table checked");
+
+        const defualtRooms = ['General', 'Random'];
+        for (const roomName of defualtRooms) {
+            const room = await db.get(`SELECT room_id FROM rooms WHERE name = ?`, [roomName]);
+            if (!room) {
+                await db.run('INSERT INTO rooms (name) VALUES (?)', [roomName]);
+                console.log(`Default room '${roomName} inserted.`);
+            }
+        }
 
         const row = await db.get("SELECT COUNT(*) as count FROM users");
         if (row.count === 0) {
             const defaultUsername = "testuser";
             const defaultPassword = "password";
-            // console.log(`No users found. Attempting to insert default user '${defaultUsername}'...`);
+            console.log(`No users found. Attempting to insert default user '${defaultUsername}'...`);
             const hash = await bcrypt.hash(defaultPassword, 10);
             const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [defaultUsername, hash]);
-            // console.log(`Default user '${defaultUsername}' inserted with ID: ${result.lastID}`);
+            console.log(`Default user '${defaultUsername}' inserted with ID: ${result.lastID}`);
         }
 
         return db;
@@ -75,7 +90,7 @@ async function initializeDB() {
     }
 }
 
-// Export encryption functions for use elsewhere in your app
+// Export encryption functions for use elsewhere
 module.exports = {
     dbPromise: initializeDB(),
     encrypt,

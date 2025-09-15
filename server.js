@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 const { dbPromise } = require('./database');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto'); // <-- ADD THIS LINE!
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -62,8 +62,6 @@ async function decrypt(encryptedText, key, iv) {
     return decrypted;
 }
 
-// -----------------------------------
-
 async function startApp() {
     let db;
     const userSockets = {};
@@ -107,7 +105,6 @@ async function startApp() {
                 const hash = await bcrypt.hash(password, 10);
                 const result = await db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [username, hash]);
 
-                // ENCRYPT EMPTY CONTACTS FOR NEW USER
                 const userId = result.lastID;
                 const contacts = [];
                 const salt = crypto.randomBytes(16); // Buffer, not hex string
@@ -239,7 +236,8 @@ async function startApp() {
         app.get('/contacts', isAuthenticated, async (req, res) => {
             try {
                 const user = await db.get(`SELECT * FROM users WHERE id = ?`, [req.session.userId]);
-                if (!user) return res.status(401).send('User not found');
+                if (!user)
+                    return res.status(401).send('User not found');
 
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
                 if (!contactRecord)
@@ -354,6 +352,16 @@ async function startApp() {
             }
         });
 
+        app.get('/rooms', isAuthenticated, async (req, res) => {
+            try {
+                const rooms = await db.all(`SELECT name FROM rooms`);
+                res.json(rooms);
+            } catch (err) {
+                console.log('Error fetching rooms:', err);
+                res.status(500).send('Error fetching rooms');
+            }
+        });
+
         // --- SOCKET.IO INTEGRATION ---
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
         io.use(wrap(sessionMiddleware));
@@ -373,6 +381,8 @@ async function startApp() {
                 userSockets[userId].push(socket.id);
             }
 
+            const userRooms = {};
+
             socket.on('chat message', (data) => {
                 const userId = socket.request.session.userId;
                 const senderUsername = socket.request.username;
@@ -389,7 +399,8 @@ async function startApp() {
                 };
 
                 console.log(`Message from ${messageData.username} (${messageData.id}): ${messageData.message}`);
-                io.emit('chat message', messageData);
+                const currentRoom = userRooms[socket.id] || 'general';
+                io.to(currentRoom).emit('chat message', messageData);
             });
 
             socket.on('disconnect', () => {
@@ -400,6 +411,72 @@ async function startApp() {
                 }
                 console.log(`User disconnected: ${socket.id} (Username: ${socket.request.username || 'N/A'})`);
             });
+
+            socket.on('join room', (room) => {
+                // Leave previous room if any
+                const previousRoom = userRooms[socket.id];
+                if (previousRoom)
+                    socket.leave(previousRoom);
+
+                socket.join(room);
+                userRooms[socket.id] = room;
+
+                // Notify the user that they have joined the new room
+                socket.emit('room message', { message: `You have joined the ${room} room.` });
+                console.log(`${socket.request.username} joined room: ${room}`);
+            });
+
+            socket.on('create room', async (roomName) => {
+                if (!roomName || typeof roomName !== 'string' || roomName.trim().length === 0)
+                    return socket.emit('room message', { message: `Error: Invalid room name` });
+                const trimmedRoomName = roomName.trim();
+
+                try {
+                    const existingRoom = await db.get(`SELECT name FROM rooms WHERE name = ?`, [trimmedRoomName]);
+                    if (existingRoom)
+                        return socket.emit('room message', { message: `Room "${trimmedRoomName}" already exists.` });
+
+                    await db.run(`INSERT INTO rooms (name) VALUES (?)`, [trimmedRoomName]);
+                    console.log(`Room "${trimmedRoomName}" created by ${socket.request.username}.`);
+                    io.emit('room created', trimmedRoomName);
+                    const previousRoom = userRooms[socket.id];
+                    if (previousRoom)
+                        socket.leave(previousRoom);
+                    socket.join(trimmedRoomName);
+                    userRooms[socket.id] = trimmedRoomName;
+
+                    socket.emit('room message', { message: `You created and joined the "${trimmedRoomName}" room.` });
+                } catch (err) {
+                    console.error('Error saving room to database:', err);
+                    socket.emit('room message', { message: 'A server error occured.' });
+                }
+            });
+
+            socket.on('delete room', async (roomName) => {
+                if (['General', 'Random'].includes(roomName))
+                    return socket.emit('room message', { message: 'Error: cannot delete default rooms.' });
+
+                try {
+                    await db.run('DELETE FROM rooms WHERE name = ?', [roomName]);
+
+                    const socketsInRoom = io.sockets.adapter.rooms.get(roomName);
+                    if (socketsInRoom) {
+                        socketsInRoom.forEach(socketId => {
+                            const userSocket = io.sockets.sockets.get(socketId);
+                            if (userSocket) {
+                                userSocket.leave(roomName);
+                                userSocket.join('General');
+                                userSocket.emit('room mesasge', { message: `The room '${roomName}' was deleted. You have been moved to 'General'.` });
+                            }
+                        });
+                    }
+                    io.emit('room deleted', roomName);
+                    console.log(`Room "${roomName}" deleted by ${socket.request.username}.`);
+                } catch (err) {
+                    console.error('Error deleting room from database:', err);
+                    socket.emit('room message', { message: 'A server error occured while deleting the room.' });
+                }
+            })
         });
 
         // --- START SERVER ---

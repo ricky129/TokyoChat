@@ -39,6 +39,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const socketIdDisplay = document.getElementById('socketIdDisplay');
     console.log('socketIdDisplay:', socketIdDisplay);
 
+    const roomsList = document.getElementById('room-list');
+    const newRoomInput = document.getElementById('new-room');
+    const createRoomBtn = document.getElementById('create-room-btn');
+    let currentRoom = 'general';
+
     const messageDisplay = document.getElementById('message');
     console.log('messageDisplay:', messageDisplay);
 
@@ -103,7 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const responseText = await response.text();
                 console.log('Register response:', response.status, responseText);
                 if (response.ok) {
-                    userPassword = password; // <-- Save password for session
+                    userPassword = password; // Save password for session
                     console.log('userPassword (set after register):', userPassword);
                     window.localStorage.setItem('tokyochat-user', username);
                     messageDisplay.classList.remove('error');
@@ -131,20 +136,20 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('form:', form);
         console.log('messages && form userPassword:', userPassword);
 
-        // Try to recover password from previous session
-        if (!userPassword) {
-            // Optionally, you could ask the user for their password if not present; for now, it's session-only
-        }
-
         async function checkAuthAndConnectSocket() {
             try {
                 const response = await fetch('/check-auth');
                 const data = await response.json();
                 console.log('Check-auth response:', data);
+
                 if (data.authenticated) {
                     welcomeMessage.textContent = `Welcome ${data.username} to TokyoChat!`;
                     console.log('welcomeMessage.textContent:', welcomeMessage.textContent);
 
+                    /**
+                     * this socket variable represents the individual client's connection to the Socket.IO server.
+                     * To send a message from the client to the server, you need to use this client-side socket object.
+                     */
                     socket = io();
                     console.log('socket (after io()):', socket);
 
@@ -154,11 +159,67 @@ document.addEventListener('DOMContentLoaded', () => {
                         console.log('socketIdDisplay.textContent:', socketIdDisplay.textContent);
                     });
 
+                    socket.on('room created', (newRoomName) => {
+                        if (document.querySelector(`[data-room="${newRoomName}"]`))
+                            return;
+                        const roomItem = document.createElement('li');
+                        document.querySelectorAll('#room-list .room').forEach(r =>
+                            r.classList.remove('active'));
+                        roomItem.className = 'room active';
+                        roomItem.dataset.room = newRoomName;
+                        const nameSpan = document.createElement('span');
+                        nameSpan.textContent = newRoomName;
+                        roomItem.appendChild(nameSpan);
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.textContent = 'X';
+                        deleteBtn.className = 'delete-room-btn';
+                        deleteBtn.dataset.room = newRoomName;
+                        roomItem.appendChild(deleteBtn);
+                        roomsList.appendChild(roomItem);
+                        currentRoom = newRoomName;
+                    });
+
+                    socket.on('room message', (data) => {
+                        const item = document.createElement('li');
+                        item.className = 'system-message';
+                        item.textContent = data.message;
+                        messages.appendChild(item);
+                        messages.scrollTop = messages.scrollHeight;
+                    });
+
+                    createRoomBtn.addEventListener('click', () => {
+                        const roomName = newRoomInput.value.trim();
+                        if (roomName && !document.querySelector(`[data-room="${roomName}"]`)) {
+                            socket.emit('create room', roomName);
+                            newRoomInput.value = '';
+                        }
+                    });
+
+                    roomsList.addEventListener('click', (e) => {
+                        if (e.target && e.target.classList.contains('delete-room-btn')) {
+                            const roomToDelete = e.target.dataset.room;
+                            if (roomToDelete && confirm(`Are you sure you want to delete the room "${roomToDelete}`)) {
+                                socket.emit('delete room', roomToDelete);
+                                roomsList.removeChild(roomToDelete);
+                            }
+                        }
+                        else if (e.target && e.target.classList.contains('room')) {
+                            const room = e.target.dataset.room;
+                            if (room && room !== currentRoom) {
+                                socket.emit('join room', room);
+                                currentRoom = room;
+                                document.querySelectorAll('#room-list .room').forEach(r =>
+                                    r.classList.remove('active'));
+                                e.target.classList.add('active');
+                                messages.innerHTML = '';
+                            }
+                        }
+                    });
+
                     socket.on('session-changed', () => {
                         window.location.href = '/login.html';
                     });
 
-                    // Message received Route
                     socket.on('chat message', (data) => {
                         console.log('Received chat message:', data);
                         const item = document.createElement('li');
@@ -186,17 +247,30 @@ document.addEventListener('DOMContentLoaded', () => {
                         console.log('messages (after append):', messages);
                     });
 
+                    socket.on('room deleted', (deletedRoomName) => {
+                        const roomElement = document.querySelector(`[data-room="${deletedRoomName}"]`);
+                        if (roomElement)
+                            roomElement.remove();
+                        if (currentRoom === deletedRoomName) {
+                            alert(`The room "${deletedRoomName}" was deleted. You have been moved to General.`);
+                            document.querySelector('[data-room="General" i]')?.click();
+                        }
+                    })
+
                     form.addEventListener('submit', (e) => {
                         e.preventDefault();
                         console.log('input.value (before send):', input.value);
                         if (input.value) {
-                            socket.emit('chat message', { message: input.value });
+                            socket.emit('chat message', {
+                                message: input.value,
+                                room: currentRoom
+                            });
                             input.value = '';
                             console.log('input.value (after send):', input.value);
                         }
                     });
-
                     loadContacts();
+                    loadRooms();
                 } else
                     window.location.href = '/login.html';
             } catch (error) {
@@ -272,7 +346,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 try {
-                    // --- SEND PASSWORD IN HEADER FOR ENCRYPTED CONTACTS ---
                     let headers = {
                         'Content-Type': 'application/json'
                     };
@@ -332,6 +405,49 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        async function loadRooms() {
+            try {
+                const response = await fetch('/rooms');
+                if (!response.ok)
+                    throw new Error(`Failed to fetch rooms: ${response.statusText}`);
+                const rooms = await response.json();
+                if (!roomsList)
+                    return;
+                roomsList.innerHTML = '';
+
+                if (rooms.length === 0) {
+                    const item = document.createElement('li');
+                    item.textContent = "No rooms yet. Create one!";
+                    roomsList.appendChild(item);
+                } else {
+                    rooms.forEach(room => {
+                        const item = document.createElement('li');
+                        item.className = 'room';
+                        item.dataset.room = room.name;
+
+                        const nameSpan = document.createElement('span');
+                        nameSpan.textContent = room.name;
+                        item.appendChild(nameSpan);
+
+                        if (room.name !== 'General' && room.name !== 'Random') {
+                            const deleteBtn = document.createElement('button');
+                            deleteBtn.textContent = 'X';
+                            deleteBtn.className = 'delete-room-btn';
+                            deleteBtn.dataset.room = room.name;
+                            item.appendChild(deleteBtn);
+                        }
+
+                        if (room.name === currentRoom)
+                            item.classList.add('active');
+                        roomsList.appendChild(item);
+                    });
+                }
+            } catch (err) {
+                console.error('Error loading rooms:', err);
+                if (roomsList)
+                    roomsList.innerHTML = `<li class="error">Error loading rooms.</li>`;
+            }
+        }
         checkAuthAndConnectSocket();
     }
 });
