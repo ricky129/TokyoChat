@@ -36,13 +36,10 @@ function isAuthenticated(req, res, next) {
         res.status(401).redirect('/login.html');
 }
 
-// --- ENCRYPTION HELPERS ---
-
 async function deriveKey(password, salt) {
     return new Promise((resolve, reject) => {
         crypto.pbkdf2(password, salt, 100000, 32, 'sha512', (err, derivedKey) => {
-            if (err)
-                reject(err);
+            if (err) return reject(err);
             resolve(derivedKey);
         });
     });
@@ -78,7 +75,7 @@ async function startApp() {
         // Session middleware
         app.use(sessionMiddleware);
 
-        // Middleware to check db is ready (should always be true here)
+        // Middleware to check db is ready (should always be true)
         app.use((req, res, next) => {
             if (!db) {
                 console.error('Database not initialized yet for request:', req.url);
@@ -90,7 +87,6 @@ async function startApp() {
         // Static files
         app.use(express.static('public'));
 
-        // --- REGISTRATION ROUTE (with encryption) ---
         app.post('/register', async (req, res) => {
             const { username, password } = req.body;
 
@@ -125,7 +121,6 @@ async function startApp() {
 
                 req.session.userId = userId;
                 req.session.username = username;
-                // Do not store sensitive key in session
 
                 console.log(`User ${username} registered with ID: ${userId}`);
                 res.status(200).send('Registration successful!');
@@ -138,7 +133,6 @@ async function startApp() {
             }
         });
 
-        // --- LOGIN ROUTE (with contacts decryption) ---
         app.post('/login', async (req, res) => {
             const { username, password } = req.body;
 
@@ -158,7 +152,8 @@ async function startApp() {
                 const contactRecord = await db.get(`SELECT encrypted_contacts, iv, salt FROM contacts WHERE user_id = ?`, [user.id]);
                 let contacts = [];
                 if (contactRecord) {
-                    const key = await deriveKey(password, Buffer.from(contactRecord.salt, 'hex'));
+                    const saltBuffer = Buffer.from(contactRecord.salt, 'hex');
+                    const key = await deriveKey(password, saltBuffer);
                     req.session.derivedKey = key;
                     try {
                         const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
@@ -190,7 +185,6 @@ async function startApp() {
             }
         });
 
-        // --- LOGOUT ROUTE ---
         app.post('/logout', (req, res) => {
             const userId = req.session.userId;
             if (userId && userSockets[userId]) {
@@ -210,7 +204,6 @@ async function startApp() {
             });
         });
 
-        // --- CHECK AUTH STATUS ---
         app.get('/check-auth', (req, res) => {
             if (req.session.userId)
                 res.status(200).json({
@@ -222,8 +215,6 @@ async function startApp() {
                     authenticated: false
                 });
         });
-
-        // --- MAIN CHAT PROTECTION ---
         app.get('/', isAuthenticated, (req, res) => {
             res.sendFile(__dirname + '/index.html');
         });
@@ -232,7 +223,6 @@ async function startApp() {
             res.sendFile(__dirname + '/index.html');
         });
 
-        // --- CONTACTS FETCHING ROUTE (with decryption) ---
         app.get('/contacts', isAuthenticated, async (req, res) => {
             try {
                 const user = await db.get(`SELECT * FROM users WHERE id = ?`, [req.session.userId]);
@@ -240,21 +230,23 @@ async function startApp() {
                     return res.status(401).send('User not found');
 
                 const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
-                if (!contactRecord)
-                    return res.status(500).send("The user's contacts data couldn't be found.");
+                if (!contactRecord) {
+                    console.warn('The user\'s contacts data couldn\'t be found.');
+                    return res.json([]);
+                }
 
-                // Ensure the key is a Buffer
+                // ensure the key is a Buffer
                 let contacts = [];
                 try {
                     if (!req.session.derivedKey)
                         return res.status(401).send('Session key missing. Please log in again.');
 
-                    // Convert derivedKey to Buffer if it's an object
+                    // convert derivedKey to Buffer if it's an object
                     let key = req.session.derivedKey;
                     if (!(key instanceof Buffer)) {
-                        if (key && key.type === 'Buffer' && Array.isArray(key.data)) {
+                        if (key && key.type === 'Buffer' && Array.isArray(key.data))
                             key = Buffer.from(key.data);
-                        } else
+                        else
                             throw new Error('Invalid key format in session');
                     }
                     const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
@@ -286,22 +278,23 @@ async function startApp() {
             }
         });
 
-        // --- CONTACT ADDING ROUTE (with encryption) ---
         app.post('/contacts/add', isAuthenticated, async (req, res) => {
             const { contactUsername, alias } = req.body;
 
-            const user = await db.get(`SELECT * FROM users WHERE username = ?`, [contactUsername]);
+            console.log('contactUsername:', contactUsername);
+            const user = await db.get(
+                `SELECT * FROM users WHERE username = ?`,
+                [contactUsername]);
             if (!user)
                 return res.status(404).send('User not found.');
 
-            const contactRecord = await db.get(`SELECT * FROM contacts WHERE user_id = ?`, [req.session.userId]);
-            if (!contactRecord)
-                return res.status(500).send("The user's contacts data couldn't be found.");
-
+            const contactRecord = await db.get(
+                `SELECT * FROM contacts WHERE user_id = ?`,
+                [req.session.userId]);
             if (!contactUsername)
-                return res.status(400).send('Contact Username is required.');
+                return res.status(400).send('Contact username is required.');
 
-            // Convert derivedKey to Buffer if it's an object
+            // convert derivedKey to Buffer if it's an object
             let key = req.session.derivedKey;
             if (!(key instanceof Buffer)) {
                 if (key && key.type === 'Buffer' && Array.isArray(key.data))
@@ -310,12 +303,11 @@ async function startApp() {
                     throw new Error('Invalid key format in session');
             }
 
+            let contacts = [];
             try {
                 if (!req.session.derivedKey)
                     return res.status(401).send('Session key missing. Please log in again.');
-
                 try {
-
                     const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
                     console.log('Decrypted contacts:', decrypted);
                     contacts = JSON.parse(decrypted);
@@ -324,22 +316,25 @@ async function startApp() {
                     return res.status(401).send('Invalid password for decryption.');
                 }
 
-                // Check if contact already exists to prevent duplicates
+                // check if contact already exists to prevent duplicates
                 const contactExists = contacts.some(c => c.contactUserID === user.id);
                 if (contactExists)
                     return res.status(500).send('Contact already in your list');
 
-                // Add the new contact
+                // add the new contact
                 const newContact = {
                     contactUserID: user.id,
                     alias: alias || contactUsername
                 }
                 contacts.push(newContact);
 
-                // Encrypt updated contacts
+                // encrypt updated contacts
                 const encrypted_contacts = await encrypt(JSON.stringify(contacts), key, Buffer.from(contactRecord.iv, 'hex'));
 
-                await db.run(`UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`, [encrypted_contacts, req.session.userId]);
+                await db.run(
+                    `UPDATE contacts SET encrypted_contacts = ? WHERE user_id = ?`,
+                    [encrypted_contacts, req.session.userId]
+                );
                 console.log('Contacts updated for user:', req.session.userId);
 
                 res.status(200).json({
@@ -362,7 +357,7 @@ async function startApp() {
             }
         });
 
-        // --- SOCKET.IO INTEGRATION ---
+        // socket.io integration
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
         io.use(wrap(sessionMiddleware));
 
@@ -413,7 +408,6 @@ async function startApp() {
             });
 
             socket.on('join room', (room) => {
-                // Leave previous room if any
                 const previousRoom = userRooms[socket.id];
                 if (previousRoom)
                     socket.leave(previousRoom);
@@ -421,9 +415,95 @@ async function startApp() {
                 socket.join(room);
                 userRooms[socket.id] = room;
 
-                // Notify the user that they have joined the new room
                 socket.emit('room message', { message: `You have joined the ${room} room.` });
                 console.log(`${socket.request.username} joined room: ${room}`);
+            });
+
+            socket.on('chatToContact', async (contactUsername) => {
+                const userId = socket.request.session.userId;
+
+                const contactUser = await db.get(
+                    `SELECT id FROM users WHERE username = ?`,
+                    [contactUsername]
+                );
+
+                if (!contactUser) {
+                    console.error(`Attempted to chat with non-existent user: ${contactUsername}`);
+                    return socket.emit('private chat error', 'User not found.');
+                }
+
+                const contactId = contactUser.id;
+
+                if (!userId || !contactId) {
+                    console.error('Invalid user or contact ID');
+                    return socket.emit('private chat error', 'User not found.');
+                }
+
+                try {
+                    const contactRecord = await db.get(
+                        `SELECT * FROM contacts WHERE user_id = ?`,
+                        [userId]
+                    );
+                    if (!contactRecord)
+                        return socket.emit('private chat error', 'Could not find your contact data.');
+
+                    let key = socket.request.session.derivedKey;
+                    if(!(key instanceof Buffer))
+                        if (key && key.type === 'Buffer' && Array.isArray(key.data))
+                            key = Buffer.from(key.data);
+                        else
+                            throw new Error('Invalid key format in session');
+
+                    const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
+                    const contacts = JSON.parse(decrypted);
+                    const targetContact = contacts.find(c =>
+                        c.contactUserID === contactId
+                    );
+                    const displayName = targetContact ? targetContact.alias : contactUsername;
+
+                    const existingChat = await db.get(
+                        `SELECT T1.chat_id
+                            FROM chat_participants AS T1
+                            JOIN chat_participants AS T2
+                            ON T1.chat_id = T2.chat_id
+                            WHERE T1.user_id = ? AND T2.user_id = ?`,
+                        [userId, contactId]
+                    );
+
+                    let chatId;
+
+                    if (existingChat) {
+                        chatId = existingChat.chat_id;
+                        console.log(`Existing chat found with ID: ${chatId}`);
+                    } else {
+                        const result = await db.run(
+                            `INSERT INTO private_chats VALUES (NULL)`
+                        );
+                        chatId = result.lastID;
+                        console.log(`New private chat created with ID: ${chatId}`);
+
+                        await db.run(
+                            `INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?), (?, ?)`,
+                            [chatId, userId, chatId, contactId]
+                        );
+                        console.log(`Participants added to chat ${chatId}`);
+                    }
+
+                    const previousRoom = userRooms[socket.id];
+                    if (previousRoom)
+                        socket.leave(previousRoom);
+
+                    const privateRoomName = `private_chat_${chatId}`;
+                    socket.join(privateRoomName);
+                    userRooms[socket.id] = privateRoomName;
+
+                    socket.emit('joined private chat', { chatId });
+                    socket.emit('room message', { message: `You joined your private chat with "${displayName}" room.` });
+                    console.log(`${socket.request.username} joined private chat: ${chatId}`);
+                } catch (err) {
+                    console.error('Error handling chatToContact:', err);
+                    socket.emit('private chat error', 'A server error occurred.');
+                }
             });
 
             socket.on('create room', async (roomName) => {
@@ -432,13 +512,17 @@ async function startApp() {
                 const trimmedRoomName = roomName.trim();
 
                 try {
-                    const existingRoom = await db.get(`SELECT name FROM rooms WHERE name = ?`, [trimmedRoomName]);
+                    const existingRoom = await db.get(
+                        `SELECT name FROM rooms WHERE name = ?`,
+                        [trimmedRoomName]);
                     if (existingRoom)
                         return socket.emit('room message', { message: `Room "${trimmedRoomName}" already exists.` });
 
-                    await db.run(`INSERT INTO rooms (name) VALUES (?)`, [trimmedRoomName]);
+                    await db.run(
+                        `INSERT INTO rooms (name) VALUES (?)`,
+                        [trimmedRoomName]);
                     console.log(`Room "${trimmedRoomName}" created by ${socket.request.username}.`);
-                    io.emit('room created', trimmedRoomName);
+                    socket.emit('room created', trimmedRoomName);
                     const previousRoom = userRooms[socket.id];
                     if (previousRoom)
                         socket.leave(previousRoom);
@@ -479,7 +563,6 @@ async function startApp() {
             })
         });
 
-        // --- START SERVER ---
         server.listen(PORT, () => {
             console.log(`Server listening on port ${PORT}`);
             console.log(`Default login user: testuser / password`);

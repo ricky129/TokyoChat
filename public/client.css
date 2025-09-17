@@ -243,3 +243,17 @@ button:hover {
     background-color: var(--error-color);
     color: white;
 }
+
+.contact.active {
+    background-color: var(--primary-accent);
+}
+
+.message-sender.message-link {
+    cursor: pointer;
+    font-weight: bold;
+    color: #007bff;
+}
+
+.message-sender.message-link:hover {
+    color: #0056b3;
+}

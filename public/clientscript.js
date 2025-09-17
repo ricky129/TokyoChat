@@ -1,6 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
     const inputField = document.getElementById('input');
-    
+
     if (inputField)
         inputField.focus();
 
@@ -112,12 +112,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 const responseText = await response.text();
                 console.log('Register response:', response.status, responseText);
                 if (response.ok) {
-                    userPassword = password; // Save password for session
+                    userPassword = password;
                     console.log('userPassword (set after register):', userPassword);
                     window.localStorage.setItem('tokyochat-user', username);
                     messageDisplay.classList.remove('error');
                     messageDisplay.classList.add('success');
-                    window.location.href = '/'; // Redirect to main chat page on success
+                    window.location.href = '/';
                 } else {
                     messageDisplay.textContent = responseText || 'Registration failed.';
                     messageDisplay.classList.remove('success');
@@ -168,6 +168,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (document.querySelector(`[data-room="${newRoomName}"]`))
                             return;
                         const roomItem = document.createElement('li');
+                        document.querySelectorAll('#contactsList .contact').forEach(contact =>
+                            contact.classList.remove('active'));
                         document.querySelectorAll('#room-list .room').forEach(r =>
                             r.classList.remove('active'));
                         roomItem.className = 'room active';
@@ -192,11 +194,46 @@ document.addEventListener('DOMContentLoaded', () => {
                         messages.scrollTop = messages.scrollHeight;
                     });
 
-                    createRoomBtn.addEventListener('click', () => {
+                    createRoomBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
                         const roomName = newRoomInput.value.trim();
                         if (roomName && !document.querySelector(`[data-room="${roomName}"]`)) {
+                            document.querySelectorAll('#contactsList .contact').forEach(contact =>
+                                contact.classList.remove('active'));
                             socket.emit('create room', roomName);
+                            console.log('roomName:', roomName);
+                            socket.emit('join room', roomName);
                             newRoomInput.value = '';
+                        }
+                    });
+
+                    messages.addEventListener('click', (e) => {
+                        console.log('contactUsername:', e.target.dataset.contactUsername);
+                        if (e.target && e.target.classList.contains('message-link')) {
+                            const contactUsername = e.target.dataset.contactUsername;
+                            if (contactUsername) {
+                                document.querySelectorAll('#contactsList .contact').forEach(contact =>
+                                    contact.classList.remove('active'));
+                                document.querySelectorAll('#room-list .room').forEach(r =>
+                                    r.classList.remove('active'));
+                                e.target.classList.add('active');
+                                socket.emit('chatToContact', contactUsername);
+                            }
+                        }
+                    });
+
+                    contactsList.addEventListener('click', (e) => {
+                        if (e.target && e.target.classList.contains('contact')) {
+                            const contactUsername = e.target.dataset.contactUsername;
+                            if (contactUsername) {
+                                document.querySelectorAll('#contactsList .contact').forEach(contact =>
+                                    contact.classList.remove('active'));
+                                document.querySelectorAll('#room-list .room').forEach(r =>
+                                    r.classList.remove('active'));
+                                e.target.classList.add('active');
+                                console.log('contactUsername:', contactUsername);
+                                socket.emit('chatToContact', contactUsername);
+                            }
                         }
                     });
 
@@ -213,6 +250,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (room && room !== currentRoom) {
                                 socket.emit('join room', room);
                                 currentRoom = room;
+                                document.querySelectorAll('#contactsList .contact').forEach(contact =>
+                                    contact.classList.remove('active'));
                                 document.querySelectorAll('#room-list .room').forEach(r =>
                                     r.classList.remove('active'));
                                 e.target.classList.add('active');
@@ -241,6 +280,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         const senderSpan = document.createElement('span');
                         senderSpan.classList.add('message-sender');
                         senderSpan.textContent = `[${displayName}]`;
+                        senderSpan.dataset.contactUsername = data.username;
+                        senderSpan.classList.add('message-link');
 
                         const messageSpan = document.createElement('span');
                         messageSpan.classList.add('message-text');
@@ -260,7 +301,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             alert(`The room "${deletedRoomName}" was deleted. You have been moved to General.`);
                             document.querySelector('[data-room="General" i]')?.click();
                         }
-                    })
+                    });
+
+                    socket.on('joined private chat', (data) => {
+                        currentRoom = data;
+                        document.querySelectorAll('#room-list .room').forEach(r =>
+                            r.classList.remove('active')
+                        );
+                        const newActiveRoom = document.querySelector(`.room[data-chat-id="${currentRoom}"]`);
+                        if (newActiveRoom)
+                            newActiveRoom.classList.add('active');
+                        messages.innerHTML = '';
+                    });
 
                     form.addEventListener('submit', (e) => {
                         e.preventDefault();
@@ -274,13 +326,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             console.log('input.value (after send):', input.value);
                         }
                     });
+
                     loadContacts();
                     loadRooms();
                 } else
                     window.location.href = '/login.html';
             } catch (error) {
                 console.error('Authentication check failed:', error);
-                window.location.href = '/login.html'; // Redirect on auth check error
+                window.location.href = '/login.html';
             }
         }
 
@@ -307,10 +360,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (contactsList) {
                             contacts.forEach(element => {
                                 const item = document.createElement('li');
+                                item.className = 'contact';
+                                item.dataset.contactUsername = element.contactUsername;
                                 const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
                                 console.log('element:', element);
                                 console.log('displayName (contact):', displayName);
                                 item.textContent = displayName;
+                                item.classList.add('contact-entry');
+                                item.dataset.username = element.contactUsername;
                                 contactsList.appendChild(item);
                                 console.log('contactsList (after append):', contactsList);
                             });
