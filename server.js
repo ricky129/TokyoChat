@@ -103,7 +103,7 @@ async function startApp() {
 
                 const userId = result.lastID;
                 const contacts = [];
-                const salt = crypto.randomBytes(16); // Buffer, not hex string
+                const salt = crypto.randomBytes(16);
                 const iv = crypto.randomBytes(16).toString('hex');
                 const key = await deriveKey(password, salt);
                 req.session.derivedKey = key;
@@ -148,7 +148,7 @@ async function startApp() {
                 if (!result)
                     return res.status(401).send('Invalid password');
 
-                // Fetch encrypted contacts
+                // fetch encrypted contacts
                 const contactRecord = await db.get(`SELECT encrypted_contacts, iv, salt FROM contacts WHERE user_id = ?`, [user.id]);
                 let contacts = [];
                 if (contactRecord) {
@@ -159,7 +159,7 @@ async function startApp() {
                         const decrypted = await decrypt(contactRecord.encrypted_contacts, key, Buffer.from(contactRecord.iv, 'hex'));
                         contacts = JSON.parse(decrypted);
                     } catch (e) {
-                        // If decryption fails, fallback to empty
+                        // if decryption fails, fallback to empty
                         console.error('Failed to decrypt contacts for user', username, e);
                         contacts = [];
                     }
@@ -175,7 +175,6 @@ async function startApp() {
                 req.session.userId = user.id;
                 req.session.username = user.username;
                 req.session.contacts = contacts;
-                // Do not store sensitive key in session
 
                 console.log(`User ${user.username} logged in`);
                 res.status(200).send('Login successful');
@@ -257,7 +256,7 @@ async function startApp() {
                     return res.status(500).send('Failed to decrypt contacts. Please ensure your login credentials are correct.');
                 }
 
-                // Map contactUserID to username
+                // map contactUserID to username
                 const contactUserIDs = contacts.map(c => c.contactUserID);
                 let contactUsernamesMap = {};
                 if (contactUserIDs.length > 0) {
@@ -355,6 +354,17 @@ async function startApp() {
                 console.log('Error fetching rooms:', err);
                 res.status(500).send('Error fetching rooms');
             }
+        });
+
+        app.get('/ownId', async (req, res) => {
+            let id;
+            try {
+                id = req.session.userId;
+            } catch (err) {
+                console.log('Error fetching ownId:', err);
+                res.status(500).send('Error fetching ownId');
+            }
+            return res.json(id);
         });
 
         // socket.io integration

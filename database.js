@@ -3,9 +3,6 @@ const sqlite3 = require('sqlite3');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'default_32_byte_long_key_123456789012'; // 32 bytes
-const IV_LENGTH = 16; // AES block size
-
 // Reusable function to derive key
 async function deriveKey(password, salt) {
     return new Promise((resolve, reject) => {

@@ -56,7 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('contactsCache (init):', contactsCache);
     console.log('userPassword (init):', userPassword);
 
-    // --- Authentication Logic (for login.html and register.html) ---
+    // --- authentication Logic (for login.html and register.html) ---
     if (loginForm) {
         console.log("Inside login form.");
         loginForm.addEventListener('submit', async (e) => {
@@ -264,7 +264,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         window.location.href = '/login.html';
                     });
 
-                    socket.on('chat message', (data) => {
+                    socket.on('chat message', async (data) => {
                         console.log('Received chat message:', data);
                         const item = document.createElement('li');
 
@@ -286,6 +286,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         const messageSpan = document.createElement('span');
                         messageSpan.classList.add('message-text');
                         messageSpan.textContent = data.message;
+
+                        console.log('data.id:', data.id);
+                        const ownId = await fetch('/ownId', {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        console.log('ownId:', ownId);
+                        if (data.id === await ownId.json())
+                            item.classList.add('own-message');
 
                         item.appendChild(senderSpan);
                         item.appendChild(messageSpan);

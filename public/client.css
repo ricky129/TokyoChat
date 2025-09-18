@@ -70,12 +70,14 @@ body {
 .content-area {
     display: flex;
     flex-grow: 1;
-    overflow: hidden; /* Important for child elements with scrolling */
+    overflow: hidden;
+    /* Important for child elements with scrolling */
 }
 
 /* --- Contacts & Rooms (Side Panel) --- */
 .side-panel {
-    flex: 0 0 280px; /* Does not grow or shrink, base width 280px */
+    flex: 0 0 280px;
+    /* Does not grow or shrink, base width 280px */
     background-color: var(--surface-dark);
     padding: 1.5rem;
     display: flex;
@@ -93,14 +95,16 @@ body {
     letter-spacing: 1px;
 }
 
-.contacts-list, #room-list {
+.contacts-list,
+#room-list {
     list-style: none;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
 }
 
-.contacts-list li, #room-list li {
+.contacts-list li,
+#room-list li {
     padding: 0.75rem 1rem;
     border-radius: 6px;
     cursor: pointer;
@@ -110,7 +114,8 @@ body {
     align-items: center;
 }
 
-.contacts-list li:hover, #room-list li:hover {
+.contacts-list li:hover,
+#room-list li:hover {
     background-color: var(--surface-light);
 }
 
@@ -156,6 +161,15 @@ body {
     padding: 0.75rem 1rem;
     border-radius: var(--border-radius);
     line-height: 1.5;
+}
+
+.own-message {
+    align-self: flex-end;
+    text-align: right;
+}
+
+.own-message .message-text {
+    background-color: var(--primary-accent);
 }
 
 .system-message {
@@ -229,8 +243,14 @@ button:hover {
     margin-top: 0.75rem;
     font-size: 0.9rem;
 }
-#contactMessage.error { color: var(--error-color); }
-#contactMessage.success { color: var(--success-color); }
+
+#contactMessage.error {
+    color: var(--error-color);
+}
+
+#contactMessage.success {
+    color: var(--success-color);
+}
 
 .delete-room-btn {
     background-color: transparent;
@@ -239,6 +259,7 @@ button:hover {
     font-size: 0.8rem;
     line-height: 1;
 }
+
 .delete-room-btn:hover {
     background-color: var(--error-color);
     color: white;
