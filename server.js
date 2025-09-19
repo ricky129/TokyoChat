@@ -5,6 +5,9 @@ const { dbPromise } = require('./database');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { generateKeyPairSync } = require('./database');
+const { toNamespacedPath } = require('path');
+const { send } = require('process');
 
 const app = express();
 const server = http.createServer(app);
@@ -111,6 +114,20 @@ async function startApp() {
 
                 await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`, [userId, encrypted_contacts, iv, salt.toString('hex')]);
 
+                const { publicKey, privateKey } = generateKeyPairSync('ec', {
+                    namedCurve = 'prime256v1',
+                    publicKeyEncoding: { type: 'spki', format: 'der' },
+                    privateKeyEncoding: { type: 'pkcs8', format: 'der' }
+                });
+                const privSalt = crypto.randomBytes(16);
+                const privIv = crypto.randomBytes(16);
+                const privDerKey = await deriveKey(password, privSalt);
+                const encPriv = encrypt(privateKey, privDerKey, privIv);
+                await db.run(
+                    `INSERT INTO user_keys (user_id, public_key, encrypted_private_key, private_iv, private_salt) VALUES (?, ?, ?, ?, ?)`,
+                    [userId, publicKey.toString('hex'), encPriv.encryptedData, encPriv.iv, privSalt.toString('hex')]
+                );
+
                 const oldUserId = req.session.userId;
                 if (oldUserId && userSockets[oldUserId]) {
                     userSockets[userId].forEach(socketId => {
@@ -175,6 +192,20 @@ async function startApp() {
                 req.session.userId = user.id;
                 req.session.username = user.username;
                 req.session.contacts = contacts;
+
+                const keyRecord = await db.get(
+                    `SELECT encrypted_private_key, private_iv, private_salt
+                    FROM user_keys
+                    WHERE user_id = ?`,
+                    [user.id]
+                );
+                if (keyRecord) {
+                    const privSaltBuf = Buffer.from(keyRecord.private_salt, 'hex');
+                    const privKey = await deriveKey(password, privSaltBuf);
+                    const decryptedPriv = await decrypt(keyRecord.encrypted_private_key, privKey, Buffer.from(keyRecord.private_iv, 'hex'));
+                    req.session.privateKey = decryptedPriv;
+                } else
+                    console.error('No private key found for user', username);
 
                 console.log(`User ${user.username} logged in`);
                 res.status(200).send('Login successful');
@@ -259,18 +290,33 @@ async function startApp() {
                 // map contactUserID to username
                 const contactUserIDs = contacts.map(c => c.contactUserID);
                 let contactUsernamesMap = {};
+                let contactPubKeysMap = {};
                 if (contactUserIDs.length > 0) {
                     const placeholders = contactUserIDs.map(() => '?').join(',');
-                    const users = await db.all(`SELECT id, username FROM users WHERE id IN (${placeholders})`, contactUserIDs);
-                    users.forEach(u => { contactUsernamesMap[u.id] = u.username; });
+                    const users = await db.all(`
+                        SELECT id, username 
+                        FROM users 
+                        WHERE id IN (${placeholders})`,
+                        contactUserIDs
+                    );
+                    users.forEach(u => {
+                        contactUsernamesMap[u.id] = u.username;
+                    });
+                    const keys = await db.all(
+                        `SELECT user_id, public_key
+                        FROM user_keys
+                        WHERE user_id IN (${placeholders})`,
+                        contactUserIDs
+                    );
+                    keys.forEach(k => {
+                        contactPubKeysMap[k.user_id] = k.public_key;
+                    });
                 }
-                const contactsWithUsernames = contacts.map(c => ({
+                const contactsWithDetails = contacts.map(c => ({
                     contactUserID: c.contactUserID,
-                    contactUsername: contactUsernamesMap[c.contactUserID] || 'Unknown User',
-                    alias: c.alias
+                    contactUsername: contactUsernamesMap[c.contactUserID] || null
                 }));
-
-                res.json(contactsWithUsernames);
+                res.json(contactsWithDetails);
             } catch (err) {
                 console.error('Error fetching contacts:', err);
                 res.status(500).send('Error fetching contacts.');
@@ -321,10 +367,18 @@ async function startApp() {
                     return res.status(500).send('Contact already in your list');
 
                 // add the new contact
+                const keyRec = await db.get(
+                    `SELECT public_key
+                    FROM user_keys
+                    WHERE user_id = ?`,
+                    [user.id]
+                );
                 const newContact = {
                     contactUserID: user.id,
-                    alias: alias || contactUsername
-                }
+                    alias: alias || contactUsername,
+                    contactUsername: contactUsername,
+                    publicKey: keyRec ? keyRec.public_key : null
+                };
                 contacts.push(newContact);
 
                 // encrypt updated contacts
@@ -367,6 +421,12 @@ async function startApp() {
             return res.json(id);
         });
 
+        app.get('/get-private-key', isAuthenticated, (req, res) => {
+            if (!req.session.privateKey)
+                return res.status(401).json({ error: 'Private key not available. Please re-login.' });
+            res.json({ privateKeyHex: req.session.privateKey.toString('hex') });
+        })
+
         // socket.io integration
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
         io.use(wrap(sessionMiddleware));
@@ -406,6 +466,41 @@ async function startApp() {
                 console.log(`Message from ${messageData.username} (${messageData.id}): ${messageData.message}`);
                 const currentRoom = userRooms[socket.id] || 'general';
                 io.to(currentRoom).emit('chat message', messageData);
+            });
+
+            socket.on('private message', async (data) => {
+                const { encrypted, iv, chatId } = data;
+                if (!encrypt || !iv || !chatId)
+                    return socket.emit('private chat error', 'Invalid message data');
+
+                const userId = socket.request.session.userId;
+                const senderUsername = socket.request.username;
+
+                if (!userId) {
+                    console.warn(`Attempted to send private message without a valid userId: ${socket.id}`);
+                    return;
+                }
+
+                try {
+                    const result = await db.run(
+                        `INSERT INTO private_messages (chat_id, sender_id, encrypted_message, iv, salt) VALUES (?, ?, ?, ?, ?)`,
+                        [chatId, userId, encrypted, iv, '']
+                    );
+
+                    const privateRoomName = `private_chat_${chatId}`;
+                    io.to(privateRoomName).emit('private chat message', {
+                        id: userId,
+                        username: senderUsername,
+                        encrypted,
+                        iv,
+                        timestamp: new Date().toISOString()
+                    });
+
+                    console.log(`Private message sent in chat ${chatId} from ${senderUsername}`);
+                } catch (err) {
+                    console.error('Error storing private message:', err);
+                    socket.emit('private chat error', 'Failed to send message');
+                }
             });
 
             socket.on('disconnect', () => {
@@ -458,7 +553,7 @@ async function startApp() {
                         return socket.emit('private chat error', 'Could not find your contact data.');
 
                     let key = socket.request.session.derivedKey;
-                    if(!(key instanceof Buffer))
+                    if (!(key instanceof Buffer))
                         if (key && key.type === 'Buffer' && Array.isArray(key.data))
                             key = Buffer.from(key.data);
                         else
@@ -506,6 +601,15 @@ async function startApp() {
                     const privateRoomName = `private_chat_${chatId}`;
                     socket.join(privateRoomName);
                     userRooms[socket.id] = privateRoomName;
+
+                    const history = await db.all(
+                        `SELECT id, sender_id, encrypted_message, iv, timestamp
+                        FROM private_messages
+                        WHERE chat_id = ?
+                        ORDER BY timestamp ASC`,
+                        [chatId]
+                    );
+                    socket.emit('private chat history', history);
 
                     socket.emit('joined private chat', { chatId });
                     socket.emit('room message', { message: `You joined your private chat with "${displayName}" room.` });

@@ -53,8 +53,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let contactsCache = [];
     let userPassword = null;
+    let ownId = null;
+    let ownUsername = null;
+    let ownPrivateKey = null;
+    let currentContact = null;
+    let currentShared = null;
+
     console.log('contactsCache (init):', contactsCache);
     console.log('userPassword (init):', userPassword);
+
+    function hexToBytes(hex) {
+        const bytes = [];
+        for (let index = 0; index < hex.length; index+=2)
+            bytes.push(parseInt(hex.substr(index, 2), 16));
+        return new Uint8Array(bytes);
+    }
+
+    function arrayBufferToHex(buffer) {
+        return Array.from(new Uint8Array(buffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+                .join('');
+    }
+
+    async function importPrivateKey(privateKeyHex) {
+        const privBytes = hexToBytes(privateKeyHex);
+        return crypto.subtle.importKey(
+            'pkcs8',
+            privBytes,
+            { name: 'EDCH', namedCurve: 'P-256' },
+            false,
+            ['deriveBits']
+        );
+    }
+
+    async function importPublicKey(publicKeyHex) {
+        const pubBytes = hexToBytes(publicKeyHex);
+        return crypto.subtle.importKey(
+            'spki',
+            pubBytes,
+            { name: 'EDCH', namedCurve: 'P-256' },
+            false,
+            ['deriveBits']
+        );
+    }
+
+    async function deriveShared(ownPriv, contactPub) {
+        
+    }
 
     // --- authentication Logic (for login.html and register.html) ---
     if (loginForm) {
