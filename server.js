@@ -62,6 +62,15 @@ async function decrypt(encryptedText, key, iv) {
     return decrypted;
 }
 
+async function decryptToBuffer(encryptedText, key, iv) {
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    const decryptedBuffer = Buffer.concat([
+        decipher.update(encryptedText, 'hex'),
+        decipher.final()
+    ]);
+    return decryptedBuffer;
+}
+
 async function startApp() {
     let db;
     const userSockets = {};
@@ -115,7 +124,7 @@ async function startApp() {
                 await db.run(`INSERT INTO contacts (user_id, encrypted_contacts, iv, salt) VALUES (?, ?, ?, ?)`, [userId, encrypted_contacts, iv, salt.toString('hex')]);
 
                 const { publicKey, privateKey } = generateKeyPairSync('ec', {
-                    namedCurve = 'prime256v1',
+                    namedCurve: 'prime256v1',
                     publicKeyEncoding: { type: 'spki', format: 'der' },
                     privateKeyEncoding: { type: 'pkcs8', format: 'der' }
                 });
@@ -202,7 +211,7 @@ async function startApp() {
                 if (keyRecord) {
                     const privSaltBuf = Buffer.from(keyRecord.private_salt, 'hex');
                     const privKey = await deriveKey(password, privSaltBuf);
-                    const decryptedPriv = await decrypt(keyRecord.encrypted_private_key, privKey, Buffer.from(keyRecord.private_iv, 'hex'));
+                    const decryptedPriv = await decryptToBuffer(keyRecord.encrypted_private_key, privKey, Buffer.from(keyRecord.private_iv, 'hex'));
                     req.session.privateKey = decryptedPriv;
                 } else
                     console.error('No private key found for user', username);
@@ -314,7 +323,8 @@ async function startApp() {
                 }
                 const contactsWithDetails = contacts.map(c => ({
                     contactUserID: c.contactUserID,
-                    contactUsername: contactUsernamesMap[c.contactUserID] || null
+                    contactUsername: contactUsernamesMap[c.contactUserID] || null,
+                    publicKey: contactPubKeysMap[c.contactUserID] || null
                 }));
                 res.json(contactsWithDetails);
             } catch (err) {
@@ -361,12 +371,10 @@ async function startApp() {
                     return res.status(401).send('Invalid password for decryption.');
                 }
 
-                // check if contact already exists to prevent duplicates
                 const contactExists = contacts.some(c => c.contactUserID === user.id);
                 if (contactExists)
-                    return res.status(500).send('Contact already in your list');
+                    return res.status(500).send('Contact already in your list.');
 
-                // add the new contact
                 const keyRec = await db.get(
                     `SELECT public_key
                     FROM user_keys
@@ -410,22 +418,27 @@ async function startApp() {
             }
         });
 
-        app.get('/ownId', async (req, res) => {
-            let id;
-            try {
-                id = req.session.userId;
-            } catch (err) {
-                console.log('Error fetching ownId:', err);
-                res.status(500).send('Error fetching ownId');
+        app.get('/ownId', isAuthenticated, (req, res) => {
+            if (req.session.userId) {
+                res.json({ id: req.session.userId });
+            } else {
+                res.status(401).json({ error: 'Not authenticated' });
             }
-            return res.json(id);
         });
 
         app.get('/get-private-key', isAuthenticated, (req, res) => {
             if (!req.session.privateKey)
                 return res.status(401).json({ error: 'Private key not available. Please re-login.' });
-            res.json({ privateKeyHex: req.session.privateKey.toString('hex') });
-        })
+
+            let privateKey = req.session.privateKey;
+            if (!(privateKey instanceof Buffer) && privateKey.type === 'Buffer' && Array.isArray(privateKey.data))
+                privateKey = Buffer.from(privateKey.data);
+    
+            if (!(privateKey instanceof Buffer))
+                return res.status(500).json({ error: 'Private key is corrupted in the session.' });
+
+            res.json({ privateKeyHex: privateKey.toString('hex') });
+        });
 
         // socket.io integration
         const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
@@ -482,7 +495,7 @@ async function startApp() {
                 }
 
                 try {
-                    const result = await db.run(
+                    await db.run(
                         `INSERT INTO private_messages (chat_id, sender_id, encrypted_message, iv, salt) VALUES (?, ?, ?, ?, ?)`,
                         [chatId, userId, encrypted, iv, '']
                     );
@@ -611,7 +624,7 @@ async function startApp() {
                     );
                     socket.emit('private chat history', history);
 
-                    socket.emit('joined private chat', { chatId });
+                    socket.emit('joined private chat', privateRoomName);
                     socket.emit('room message', { message: `You joined your private chat with "${displayName}" room.` });
                     console.log(`${socket.request.username} joined private chat: ${chatId}`);
                 } catch (err) {

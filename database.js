@@ -123,13 +123,13 @@ async function initializeDB() {
             console.log(`No users found. Creating default users...`);
 
             const hash = await bcrypt.hash(defaultPassword, 10);
-            
+
             const result1 = await db.run(
                 `INSERT INTO users (username, password) VALUES (?, ?)`,
                 [defaultUsername1, hash]
             );
             const userId1 = result1.lastID;
-            
+
             const result2 = await db.run(
                 `INSERT INTO users (username, password) VALUES (?, ?)`,
                 [defaultUsername2, hash]
@@ -144,8 +144,8 @@ async function initializeDB() {
                 publicKeyEncoding: { type: 'spki', format: 'der' },
                 privateKeyEncoding: { type: 'pkcs8', format: 'der' }
             });
-            const { publicKey: pub2, privateKey, priv2 } = generateKeyPairSync('ec', {
-                namedCurve:'prime256v1',
+            const { publicKey: pub2, privateKey: priv2 } = generateKeyPairSync('ec', {
+                namedCurve: 'prime256v1',
                 publicKeyEncoding: { type: 'spki', format: 'der' },
                 privateKeyEncoding: { type: 'pkcs8', format: 'der' }
             });
@@ -157,12 +157,13 @@ async function initializeDB() {
             const privIv1 = crypto.randomBytes(16);
             const privKeyDer1 = await deriveKey(defaultPassword, privSalt1);
             const encPriv1 = encrypt(priv1, privKeyDer1, privIv1);
-            
+
             await db.run(
-                `INSERT INTO user_keys (user_id, public_key, encrypted_private_ket, private_iv, private_salt) VALUES (?, ?, ?, ?, ?)`,
-                [userId1, pub1.toString('hex'), encPriv1.encryptedData, encPriv1, privSalt1.toString('hex')]
+                `INSERT INTO user_keys (user_id, public_key, encrypted_private_key, private_iv, private_salt) VALUES (?, ?, ?, ?, ?)`,
+                [userId1, pub1.toString('hex'), encPriv1.encryptedData, encPriv1.iv, privSalt1.toString('hex')]
             );
 
+            // user 2 keys
             const salt2 = crypto.randomBytes(16);
             const key2 = await deriveKey(defaultPassword, salt2);
             const privSalt2 = crypto.randomBytes(16);
@@ -171,7 +172,7 @@ async function initializeDB() {
             const encPriv2 = encrypt(priv2, privKeyDer2, privIv2);
 
             await db.run(`INSERT INTO user_keys (user_id, public_key, encrypted_private_key, private_iv, private_salt) VALUES (?, ?, ?, ?, ?)`,
-                [userId2, pub2.toString('hex'), encPriv2.encryptedData, encPriv2.iv, encPriv2.iv, privSalt2.toString('hex')]
+                [userId2, pub2.toString('hex'), encPriv2.encryptedData, encPriv2.iv, privSalt2.toString('hex')]
             );
 
             // initial contacts without pubkeys
@@ -201,6 +202,14 @@ async function initializeDB() {
                 SET encrypted_contacts = ?, iv = ?
                 WHERE user_id = ?`,
                 [encContacts1Updated.encryptedData, encContacts1Updated.iv, userId1]
+            );
+
+            const contacts2Updated = [{ contactUserID: userId1, alias: 'user1', contactUsername: defaultUsername1, publicKey: pub1.toString('hex') }];
+            const newIv2 = crypto.randomBytes(16);
+            const encContacts2Updated = encrypt(JSON.stringify(contacts2Updated), key2, newIv2);
+            await db.run(
+                `UPDATE contacts SET encrypted_contacts = ?, iv = ? WHERE user_id = ?`,
+                [encContacts2Updated.encryptedData, encContacts2Updated.iv, userId2]
             );
             console.log("Default contacts established for 'testuser' and 'testuser2'.");
         }

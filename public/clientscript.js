@@ -38,7 +38,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('input:', input);
 
     const messages = document.getElementById('messages');
-    console.log('messages:', messages);
+    console.log('mess   ages:', messages);
 
     const socketIdDisplay = document.getElementById('socketIdDisplay');
     console.log('socketIdDisplay:', socketIdDisplay);
@@ -64,7 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function hexToBytes(hex) {
         const bytes = [];
-        for (let index = 0; index < hex.length; index+=2)
+        for (let index = 0; index < hex.length; index += 2)
             bytes.push(parseInt(hex.substr(index, 2), 16));
         return new Uint8Array(bytes);
     }
@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function arrayBufferToHex(buffer) {
         return Array.from(new Uint8Array(buffer))
             .map(b => b.toString(16).padStart(2, '0'))
-                .join('');
+            .join('');
     }
 
     async function importPrivateKey(privateKeyHex) {
@@ -80,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return crypto.subtle.importKey(
             'pkcs8',
             privBytes,
-            { name: 'EDCH', namedCurve: 'P-256' },
+            { name: 'ECDH', namedCurve: 'P-256' },
             false,
             ['deriveBits']
         );
@@ -91,14 +91,97 @@ document.addEventListener('DOMContentLoaded', () => {
         return crypto.subtle.importKey(
             'spki',
             pubBytes,
-            { name: 'EDCH', namedCurve: 'P-256' },
+            { name: 'ECDH', namedCurve: 'P-256' },
             false,
-            ['deriveBits']
+            []
         );
     }
 
     async function deriveShared(ownPriv, contactPub) {
-        
+        const secret = await crypto.subtle.deriveBits(
+            { name: 'ECDH', public: contactPub },
+            ownPriv,
+            256
+        );
+        return new Uint8Array(secret);
+    }
+
+    async function encryptMessage(message, keyBytes) {
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        const key = await crypto.subtle.importKey(
+            'raw',
+            keyBytes,
+            { name: 'AES-CBC' },
+            false,
+            ['encrypt']
+        );
+        const data = new TextEncoder().encode(message);
+        const encrypted = await crypto.subtle.encrypt(
+            { name: 'AES-CBC', iv: iv },
+            key,
+            data
+        );
+        return {
+            encrypted: arrayBufferToHex(encrypted),
+            iv: arrayBufferToHex(iv)
+        };
+    }
+
+    async function decryptMessage(encryptedHex, ivHex, keyBytes) {
+        const key = await crypto.subtle.importKey(
+            'raw',
+            keyBytes,
+            { name: 'AES-CBC' },
+            false,
+            ['decrypt']
+        );
+        const encBytes = hexToBytes(encryptedHex);
+        const ivBytes = hexToBytes(ivHex);
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-CBC', iv: ivBytes },
+            key,
+            encBytes
+        );
+        return new TextDecoder().decode(decrypted);
+    }
+
+    function createMessageElement(name, text, isOwn = false) {
+        const item = document.createElement('li');
+        if (isOwn)
+            item.classList.add('own-message');
+
+        const senderSpan = document.createElement('span');
+        senderSpan.classList.add('message-sender');
+        senderSpan.textContent = `[${name}]`;
+
+        const messageSpan = document.createElement('span');
+        messageSpan.classList.add('message-text');
+        messageSpan.textContent = text;
+
+        item.appendChild(senderSpan);
+        item.appendChild(messageSpan);
+        return item;
+    }
+
+    function renderContacts() {
+        if (!contactsList)
+            return;
+        contactsList.innerHTML = '';
+        if (contactsCache.length === 0) {
+            const item = document.createElement('li');
+            item.textContent = 'No contacts yet. Add some!';
+            contactsList.appendChild(item);
+        } else {
+            contactsCache.forEach(element => {
+                const item = document.createElement('li');
+                item.className = 'contact';
+                item.dataset.contactUsername = element.contactUsername;
+                const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
+                item.textContent = displayName;
+                item.classList.add('contact-entry');
+                contactsList.appendChild(item);
+            });
+        }
     }
 
     // --- authentication Logic (for login.html and register.html) ---
@@ -123,9 +206,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     userPassword = password;
                     console.log('userPassword (set after login):', userPassword);
                     window.localStorage.setItem('tokyochat-user', username);
-                    window.location.href = '/';
-                }
-                else {
+                    window.location.href = '/index.html';
+                } else {
                     const errorText = await response.text();
                     messageDisplay.textContent = errorText || 'Login failed.';
                     console.log('messageDisplay.textContent (login error):', messageDisplay.textContent);
@@ -195,6 +277,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     welcomeMessage.textContent = `Welcome ${data.username} to TokyoChat!`;
                     console.log('welcomeMessage.textContent:', welcomeMessage.textContent);
 
+                    ownUsername = data.username;
+                    if (!ownId) {
+                            ownId = await (await fetch('/ownId')).json();
+                            console.log('ownId:', ownId);
+                        }
+                    ownId = await (await fetch('/ownId')).json();
+                    const privRes = await fetch('/get-private-key');
+                    if (privRes.ok) {
+                        const { privateKeyHex } = await privRes.json();
+                        ownPrivateKey = await importPrivateKey(privateKeyHex);
+                        console.log('ownPrivateKey');
+                    } else
+                        console.error('Failed to fetch private key.');
                     /**
                      * this socket variable represents the individual client's connection to the Socket.IO server.
                      * To send a message from the client to the server, you need to use this client-side socket object.
@@ -207,6 +302,34 @@ document.addEventListener('DOMContentLoaded', () => {
                         socketIdDisplay.textContent = socket.id;
                         console.log('socketIdDisplay.textContent:', socketIdDisplay.textContent);
                         document.querySelector('[data-room="General" i]')?.click();
+                    });
+
+                    socket.on('private chat history', async (history) => {
+                        if (!ownId) {
+                            ownId = await (await fetch('/ownId')).json();
+                            console.log('ownId:', ownId);
+                        }
+                        for (const msg of history) {
+                            const dec = await decryptMessage(msg.encrypted_message, msg.iv, currentShared);
+                            const isOwn = msg.sender_id === ownId;
+                            const name = isOwn ? 'Me' : currentContact.alias;
+                            const item = createMessageElement(name, dec, isOwn);
+                            messages.appendChild(item);
+                        }
+                        messages.scrollTop = messages.scrollHeight;
+                    });
+
+                    socket.on('private chat message', async (data) => {
+                        if (!ownId) {
+                            ownId = await (await fetch('/ownId')).json();
+                            console.log('ownId:', ownId);
+                        }
+                        if (data.id === ownId)
+                            return;
+                        const dec = await decryptMessage(data.encrypted, data.iv, currentShared);
+                        const item = createMessageElement(currentContact.alias, dec);
+                        messages.appendChild(item);
+                        messages.scrollTop = messages.scrollHeight;
                     });
 
                     socket.on('room created', (newRoomName) => {
@@ -261,11 +384,25 @@ document.addEventListener('DOMContentLoaded', () => {
                                     contact.classList.remove('active'));
                                 document.querySelectorAll('#room-list .room').forEach(r =>
                                     r.classList.remove('active'));
-                                e.target.classList.add('active');
+                                handleChatToContact(contactUsername, e.target);
                                 socket.emit('chatToContact', contactUsername);
                             }
                         }
                     });
+
+                    async function handleChatToContact(contactUsername, targetElement) {
+                        const contact = contactsCache.find(c => c.contactUsername === contactUsername);
+                        if (!contact || !contact.publicKey) {
+                            console.error('No public key for contact');
+                            return;
+                        }
+                        targetElement.classList.add('active');
+                        const contactPub = await importPublicKey(contact.publicKey);
+                        const shared = await deriveShared(ownPrivateKey, contactPub);
+                        currentShared = shared;
+                        currentContact = contact;
+                        socket.emit('chatToContact', contactUsername);
+                    }
 
                     contactsList.addEventListener('click', (e) => {
                         if (e.target && e.target.classList.contains('contact')) {
@@ -276,8 +413,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 document.querySelectorAll('#room-list .room').forEach(r =>
                                     r.classList.remove('active'));
                                 e.target.classList.add('active');
-                                console.log('contactUsername:', contactUsername);
-                                socket.emit('chatToContact', contactUsername);
+                                handleChatToContact(contactUsername, e.target);
+                                //socket.emit('chatToContact', contactUsername);
                             }
                         }
                     });
@@ -293,6 +430,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         else if (e.target && e.target.classList.contains('room')) {
                             const room = e.target.dataset.room;
                             if (room && room !== currentRoom) {
+                                currentContact = null;
+                                currentShared = null;
                                 socket.emit('join room', room);
                                 currentRoom = room;
                                 document.querySelectorAll('#contactsList .contact').forEach(contact =>
@@ -306,13 +445,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
 
                     socket.on('session-changed', () => {
-                        window.location.href = '/login.html';
+                        window.location.href = 'login.html';
                     });
 
                     socket.on('chat message', async (data) => {
                         console.log('Received chat message:', data);
+                        if (!ownId) {
+                            ownId = await (await fetch('/ownId')).json();
+                            console.log('ownId:', ownId);
+                        }
+                        if (data.id === ownId)
+                            return;
                         const item = document.createElement('li');
-
                         console.table(contactsCache);
 
                         let displayName = data.username;
@@ -332,14 +476,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         messageSpan.classList.add('message-text');
                         messageSpan.textContent = data.message;
 
-                        console.log('data.id:', data.id);
-                        const ownId = await fetch('/ownId', {
-                            method: 'GET',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            }
-                        });
-                        console.log('ownId:', ownId);
                         if (data.id === await ownId.json())
                             item.classList.add('own-message');
 
@@ -347,6 +483,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         item.appendChild(messageSpan);
                         messages.appendChild(item);
                         console.log('messages (after append):', messages);
+                    });
+
+                    socket.on('private message', (data) => {
+
                     });
 
                     socket.on('room deleted', (deletedRoomName) => {
@@ -364,22 +504,34 @@ document.addEventListener('DOMContentLoaded', () => {
                         document.querySelectorAll('#room-list .room').forEach(r =>
                             r.classList.remove('active')
                         );
-                        const newActiveRoom = document.querySelector(`.room[data-chat-id="${currentRoom}"]`);
-                        if (newActiveRoom)
-                            newActiveRoom.classList.add('active');
                         messages.innerHTML = '';
                     });
 
                     form.addEventListener('submit', (e) => {
                         e.preventDefault();
                         console.log('input.value (before send):', input.value);
-                        if (input.value) {
-                            socket.emit('chat message', {
-                                message: input.value,
-                                room: currentRoom
+                        if (!input.value)
+                            return;
+                        const message = input.value;
+                        input.value = '';
+
+                        const currentRoomStr = currentRoom.toString();
+                        const isPrivate = currentRoomStr.startsWith("private_chat_");
+                        if (isPrivate) {
+                            const item = createMessageElement('Me', message, true);
+                            messages.appendChild(item);
+                            messages.scrollTop = messages.scrollHeight;
+
+                            encryptMessage(message, currentShared).then(({ encrypted, iv }) => {
+                                const chatId = parseInt(currentRoom.split('_')[2]);
+                                socket.emit('private message', { encrypted, iv, chatId });
                             });
-                            input.value = '';
-                            console.log('input.value (after send):', input.value);
+                        } else {
+                            const item = createMessageElement(ownUsername, message, true);
+                            messages.appendChild(item);
+                            messages.scrollTop = messages.scrollHeight;
+
+                            socket.emit('chat message', { message });
                         }
                     });
 
@@ -400,7 +552,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     const contacts = await response.json();
                     console.log('contacts (from /contacts):', contacts);
-                    contactsCache = contacts;
+                    contactsCache = contacts.filter(c => c.publicKey);
+                    renderContacts();
                     console.log('contactsCache (after load):', contactsCache);
                     if (contactsList)
                         contactsList.innerHTML = '';
@@ -412,23 +565,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             contactsList.appendChild(item);
                             console.log('contactsList (empty):', contactsList);
                         }
-                    } else {
-                        if (contactsList) {
-                            contacts.forEach(element => {
-                                const item = document.createElement('li');
-                                item.className = 'contact';
-                                item.dataset.contactUsername = element.contactUsername;
-                                const displayName = element.alias ? `${element.alias} (${element.contactUsername})` : element.contactUsername;
-                                console.log('element:', element);
-                                console.log('displayName (contact):', displayName);
-                                item.textContent = displayName;
-                                item.classList.add('contact-entry');
-                                item.dataset.username = element.contactUsername;
-                                contactsList.appendChild(item);
-                                console.log('contactsList (after append):', contactsList);
-                            });
-                        }
-                    }
+                    } else if (contactsList)
+                        renderContacts();
                 } else {
                     if (contactMessageDisplay) {
                         contactMessageDisplay.textContent = 'Failed to load contacts.';
