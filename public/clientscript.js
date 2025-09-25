@@ -324,9 +324,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             ownId = await (await fetch('/ownId')).json();
                             console.log('ownId:', ownId);
                         }
-                        if (data.id === ownId)
+                        if (data.id === ownId.id)
                             return;
                         const dec = await decryptMessage(data.encrypted, data.iv, currentShared);
+                        console.log(currentContact.alias);
                         const item = createMessageElement(currentContact.alias, dec);
                         messages.appendChild(item);
                         messages.scrollTop = messages.scrollHeight;
@@ -485,10 +486,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         console.log('messages (after append):', messages);
                     });
 
-                    socket.on('private message', (data) => {
-
-                    });
-
                     socket.on('room deleted', (deletedRoomName) => {
                         const roomElement = document.querySelector(`[data-room="${deletedRoomName}"]`);
                         if (roomElement)
@@ -524,7 +521,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                             encryptMessage(message, currentShared).then(({ encrypted, iv }) => {
                                 const chatId = parseInt(currentRoom.split('_')[2]);
-                                socket.emit('private message', { encrypted, iv, chatId });
+                                socket.emit('private chat message', { encrypted, iv, chatId, ownId });
                             });
                         } else {
                             const item = createMessageElement(ownUsername, message, true);
@@ -553,6 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const contacts = await response.json();
                     console.log('contacts (from /contacts):', contacts);
                     contactsCache = contacts.filter(c => c.publicKey);
+                    // da aggiungere alias a contactsCache per ogni id
                     renderContacts();
                     console.log('contactsCache (after load):', contactsCache);
                     if (contactsList)
@@ -567,13 +565,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     } else if (contactsList)
                         renderContacts();
-                } else {
-                    if (contactMessageDisplay) {
+                } else if (contactMessageDisplay) {
                         contactMessageDisplay.textContent = 'Failed to load contacts.';
                         contactMessageDisplay.classList.add('error');
                         console.log('contactMessageDisplay.textContent (load fail):', contactMessageDisplay.textContent);
                     }
-                }
             } catch (err) {
                 console.error('Error loading contacts:', err);
                 if (contactMessageDisplay) {

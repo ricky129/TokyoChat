@@ -323,8 +323,9 @@ async function startApp() {
                 }
                 const contactsWithDetails = contacts.map(c => ({
                     contactUserID: c.contactUserID,
-                    contactUsername: contactUsernamesMap[c.contactUserID] || null,
-                    publicKey: contactPubKeysMap[c.contactUserID] || null
+                    contactUsername: contactUsernamesMap[c.contactUserID] || nxull,
+                    publicKey: contactPubKeysMap[c.contactUserID] || null,
+                    alias: c.alias || contactUsernamesMap[c.contactUserID] || null
                 }));
                 res.json(contactsWithDetails);
             } catch (err) {
@@ -481,8 +482,8 @@ async function startApp() {
                 io.to(currentRoom).emit('chat message', messageData);
             });
 
-            socket.on('private message', async (data) => {
-                const { encrypted, iv, chatId } = data;
+            socket.on('private chat message', async (data) => {
+                const { encrypted, iv, chatId, ownId } = data;
                 if (!encrypt || !iv || !chatId)
                     return socket.emit('private chat error', 'Invalid message data');
 
