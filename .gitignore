@@ -16,3 +16,6 @@ Thumbs.db
 
 # GitHub Desktop internal files (optional, as it manages them)
 .github/
+.zed/debug.json
+.gitignore
+.zed/tasks.json
